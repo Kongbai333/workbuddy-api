@@ -143,6 +143,21 @@ type Client struct {
 	BillingBaseCN   string
 	ChatBaseGlobal  string
 	BillingBaseGlob string
+	// WebBaseCN / WebBaseGlob 成长中心（growth）Web 域。
+	//
+	// 为什么需要单独的域：成长任务的**领奖**端点只存在于 Web 域
+	// （POST https://www.workbuddy.cn/activity/growth/tasks/<code>/claim，
+	// 任务码在路径里）。CLI 域 copilot.tencent.com 上的同名路径
+	// /v2/activity/growth/tasks/reward/claim **并不存在**，调用恒返回 400
+	// "task not completed" —— 这是历史上领奖一直失败的真实原因。
+	WebBaseCN   string
+	WebBaseGlob string
+
+	// GrowthUA 成长域（growth）请求的 User-Agent；空串表示不带该头。
+	//
+	// 上游的部分任务按「客户端指纹」判定（CLI / 桌面 / web 三套），
+	// 这里只提供一个可调开关，具体指纹由调用方按任务需要设置。
+	GrowthUA string
 }
 
 // New 生产默认值。Transport 加固：禁 h2 + Dial 超时/keepalive + TLS 握手超时 + ResponseHeaderTimeout。
@@ -157,6 +172,10 @@ func New() *Client {
 		BillingBaseCN:   "https://www.codebuddy.cn",
 		ChatBaseGlobal:  "https://www.workbuddy.ai",
 		BillingBaseGlob: "https://www.workbuddy.ai",
+		// 成长中心 Web 域。CN 域用于任务领奖（任务码在路径里）。
+		// 国际版是否提供同一套成长接口未经实测，调用方遇错应记日志而非重试轰炸。
+		WebBaseCN:   "https://www.workbuddy.cn",
+		WebBaseGlob: "https://www.workbuddy.ai",
 	}
 }
 
@@ -193,6 +212,20 @@ func (c *Client) billingBase(a *auth.Auth) string {
 		return c.BillingBaseGlob
 	}
 	return c.BillingBaseCN
+}
+
+// webBase 成长中心 Web 域。任务领奖等端点只在该域提供。
+func (c *Client) webBase(a *auth.Auth) string {
+	if a != nil && a.Region() == "global" {
+		if c.WebBaseGlob != "" {
+			return c.WebBaseGlob
+		}
+		return c.ChatBaseGlobal
+	}
+	if c.WebBaseCN != "" {
+		return c.WebBaseCN
+	}
+	return c.ChatBaseCN
 }
 
 // modelsPath 返回模型/定价接口路径：国际版走 /v2/enterprises/personal/models
