@@ -3,6 +3,10 @@ dist/
 cmd/workbuddy-api/rsrc_windows_amd64.syso
 cmd/workbuddy-api/icon.ico
 
+# Docker 构建产物（二进制由 build-binary.sh 生成，镜像 tar 由 build-image.sh 生成）
+docker/workbuddy-api
+docker/dist/
+
 # 运行时数据（含敏感凭据）
 data/
 auths/

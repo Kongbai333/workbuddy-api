@@ -26,7 +26,7 @@ import (
 // defaultImportSources 未显式指定 --import-from 时，按顺序探测的「旧项目目录」候选。
 // 命中条件：该目录下存在非空的 auths/。
 var defaultImportSources = []string{
-	`D:\Program Files\workbuddy-wild`, // 旧项目的历史部署目录
+	`D:\Program Files\workbuddy-wild`,                                 // 旧项目的历史部署目录
 	filepath.Join(os.Getenv("USERPROFILE"), "wbsync", "build", "bin"), // 旧项目构建输出目录
 }
 

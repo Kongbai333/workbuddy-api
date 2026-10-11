@@ -1,0 +1,124 @@
+# workbuddy-api · 飞牛 NAS (fnOS) 图形界面部署版
+#
+# ═══════════════════════════════════════════════════════════════════
+#  使用场景：fnOS「Docker → 容器 → 新增 / Compose 项目」图形界面，
+#            直接把本文件内容粘贴进去即可部署。
+#
+#  ⚠️ 前提：镜像必须先存在，二选一 ——
+#
+#    【路径 A · ★推荐】导入离线镜像（完全不需要网络、不需要构建）
+#      1. 把这两个文件传到 NAS（例如 /vol1/appdata/workbuddy-api/）：
+#           workbuddy-api-v0.1.0-linux-amd64.tar     （约 8 MB）
+#           load-image.sh
+#      2. 在该目录执行一次：
+#           sh load-image.sh
+#         它会校验 SHA256 并 docker load 导入 workbuddy-api:latest
+#      3. 之后用本 yml 建容器即可（镜像已在本地，不会去外网拉）
+#
+#    【路径 B】在 NAS 上现场构建（需要 Dockerfile + 二进制 + entrypoint.sh）
+#      1. 把整个 docker/ 目录传到 NAS，例如：
+#           /vol1/@app/compose/workbuddy-api/
+#              ├── Dockerfile
+#              ├── entrypoint.sh
+#              └── workbuddy-api            （linux/amd64 二进制）
+#      2. 用 SSH 或 fnOS 终端在该目录执行一次：
+#           sh build-on-nas.sh
+#      3. 之后再用本 yml 建容器
+#
+#  ⚠️ 部署前必须改 3 处（下面都标了 ★必改）：
+#    1. WILDWORK_ADMIN_PASSWORD  改成你自己的强随机密码
+#    2. WILDWORK_API_KEY         改成你自己的强随机密钥
+#    3. volumes 左侧的宿主机路径，改成你 NAS 上真实存在的目录
+#       （若 7863 被占用，另改 ports 左侧）
+# ═══════════════════════════════════════════════════════════════════
+
+services:
+  workbuddy-api:
+    # ── 镜像 ─────────────────────────────────────────────────────
+    # 用上面「路径 A/B」准备好的本地镜像
+    image: workbuddy-api:latest
+
+    # 备选：如果你希望 compose 自己构建（等价于路径 B），取消下面两行注释。
+    # 注意上面的 image 仍要保留 —— 构建产物会用这个 tag。
+    # build:
+    #   context: /vol1/@app/compose/workbuddy-api
+    #   dockerfile: Dockerfile
+
+    container_name: workbuddy-api
+    # 容器异常退出自动重启；手动 stop 后不会自己起来
+    restart: unless-stopped
+
+    environment:
+      # 容器内必须监听全部网卡（不能写 127.0.0.1，否则 NAS 宿主访问不到）
+      WILDWORK_LISTEN: ":7863"
+
+      # ★必改 管理面板登录口令。
+      #   ⚠️ 对外监听（:7863 / 0.0.0.0）时**必须**设置：
+      #      程序会拒绝在「对外暴露又无密码」的情况下启动，
+      #      目的是避免局域网内任意设备无凭据打开面板（可增删账号、退出进程）。
+      #   生成：head -c 18 /dev/urandom | base64 | tr -d '/+='
+      WILDWORK_ADMIN_PASSWORD: "CHANGE_ME_admin_pass"
+
+      # ★必改 OpenAI 兼容接口的 Bearer 密钥。
+      #   生成：head -c 24 /dev/urandom | base64 | tr -d '/+='
+      #   留空 = 接口完全无鉴权，任何人可消耗你的账号额度
+      WILDWORK_API_KEY: "CHANGE_ME_strong_api_key"
+
+      # 账号目录与状态文件（容器内路径，对应下面 volumes 的挂载点）
+      WILDWORK_AUTH_DIR: "/data/auths"
+      WILDWORK_STATE_FILE: "/data/state.json"
+
+      # 区域：cn = 国内版
+      WILDWORK_REGION: "cn"
+
+      # 时区（影响定时签到的触发时刻）。二进制已内嵌 tzdata，此设置一定生效。
+      TZ: "Asia/Shanghai"
+
+      # ── 以下为可选参数，按需取消注释 ──────────────────────────
+      # 冷却时长
+      # WILDWORK_HARD_CREDIT: "12h"      # 余额/权益不足
+      # WILDWORK_SOFT_RATE: "60s"        # 被限流
+      # WILDWORK_ERR_THRESHOLD: "3"      # 累计错误几次进入冷却
+      # WILDWORK_ERR_COOLDOWN: "10m"     # 错误冷却时长
+      # 上游超时
+      # WILDWORK_TIMEOUT_SECONDS: "120"
+
+      # ── 成长中心自动化（★默认全部关闭）────────────────────────
+      # ⚠️ 这些动作会**真实改变账号状态**：兑换消耗连登档位、抽奖次数用掉不可撤销。
+      #    默认关闭是为了不在你不知情时消耗账号资源。建议先在面板里手动触发一两次，
+      #    确认结果符合预期，再打开自动执行。
+      # WILDWORK_GROWTH_REDEEM_STREAK: "true"   # 连登档位自动兑换 + 抽奖次数自动抽完
+      # WILDWORK_GROWTH_TRAVEL: "true"          # 猫猫旅行自动派出 + 到站自动领取
+      # WILDWORK_GROWTH_TRAVEL_LOCATION: "1"    # 目的地 1~4（收益/时长区间相同）
+
+    ports:
+      # 格式「宿主机端口:容器端口」，容器端口固定 7863 不要改。
+      # 左侧 7863 若被占用可改成比如 17863，之后访问也用新端口。
+      - "7863:7863"
+
+    volumes:
+      # ★必改 把 /vol1/appdata/workbuddy-api 改成你 NAS 上真实的持久化目录。
+      #   fnOS 惯例：应用数据放 /vol1/appdata/<应用名>/
+      #   首次启动会自动创建 auths/ 与 state.json，无需手动建文件。
+      #   ⚠️ 只挂「目录」，绝不挂单个文件 ——
+      #      旧项目曾把 config.json 单文件挂进来，宿主缺该文件时 Docker 会
+      #      建出一个同名空目录，导致容器启动即崩。
+      - /vol1/appdata/workbuddy-api:/data
+
+    healthcheck:
+      # 探针打容器内网卡；/healthz 无需鉴权，不用带 API Key
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:7863/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    # 日志轮转：防止长期运行把 NAS 磁盘写满
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # 让容器以非 root 运行更安全（如启用，需同步 chown 数据目录）
+    # user: "1000:1000"

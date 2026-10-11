@@ -1,0 +1,74 @@
+# workbuddy-api · Docker Compose 部署文件（NAS 上现场构建版）
+#
+# 用法：把整个 docker/ 目录传到 NAS，cd 进去后执行：
+#   docker compose up -d --build
+#
+# 设计要点（逐条对应曾经的部署失败）：
+#   1. 镜像只 COPY 预编译的静态二进制，容器内不编译、不拉 Go 模块 → 不受 GOPROXY 超时影响。
+#   2. entrypoint 用 WILDWORK_* 环境变量在容器内生成 config.json，二进制读取它；
+#      config.json **永不 bind 挂载**，不会因「单文件被挂载成目录」而崩溃。
+#   3. 只挂载目录 ./data:/data（账号 + 状态），数据持久化、可随镜像升级。
+#   4. healthcheck 探 /healthz，restart: unless-stopped 异常自动拉起。
+#   5. 时区已在二进制内嵌 tzdata，TZ 一定生效（无需在镜像里装 tzdata）。
+#
+# ⚠️ WB2A 时代的变量名已全部换成 WILDWORK_*，迁移旧部署时注意。
+
+services:
+  workbuddy-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: workbuddy-api:latest
+    container_name: workbuddy-api
+    restart: unless-stopped
+    environment:
+      # 容器内必须监听全部网卡（不能写 127.0.0.1，否则宿主访问不到）。
+      # 注意：非环回监听会**强制要求**管理密码，见下面的 ADMIN_PASSWORD。
+      WILDWORK_LISTEN: ":7863"
+
+      # ★必改 强随机管理密码（Web 面板登录口令）。
+      #   留空 + 对外监听 = 程序直接拒绝启动（防局域网无凭据访问面板）。
+      #   生成：head -c 18 /dev/urandom | base64 | tr -d '/+='
+      WILDWORK_ADMIN_PASSWORD: "${WILDWORK_ADMIN_PASSWORD:-CHANGE_ME_admin_pass}"
+
+      # ★必改 OpenAI 兼容接口的 Bearer 密钥。留空 = 接口无鉴权，任何人可消耗你的账号额度。
+      WILDWORK_API_KEY: "${WILDWORK_API_KEY:-CHANGE_ME_strong_api_key}"
+
+      # 账号目录与状态文件（容器内路径，对应下面 volumes 的挂载点）
+      WILDWORK_AUTH_DIR: "/data/auths"
+      WILDWORK_STATE_FILE: "/data/state.json"
+
+      # 区域：cn = 国内版
+      WILDWORK_REGION: "cn"
+
+      TZ: "Asia/Shanghai"
+
+      # ── 可选参数，按需取消注释 ────────────────────────────────
+      # 冷却时长
+      # WILDWORK_HARD_CREDIT: "12h"      # 余额/权益不足
+      # WILDWORK_SOFT_RATE: "60s"        # 被限流
+      # WILDWORK_ERR_THRESHOLD: "3"      # 累计错误几次进入冷却
+      # WILDWORK_ERR_COOLDOWN: "10m"     # 错误冷却时长
+      # 上游超时
+      # WILDWORK_TIMEOUT_SECONDS: "120"
+
+      # ── 成长中心自动化（默认关闭；开启会真实改变账号状态）────────
+      # WILDWORK_GROWTH_REDEEM_STREAK: "true"   # 连登档位自动兑换 + 抽奖次数自动抽完
+      # WILDWORK_GROWTH_TRAVEL: "true"          # 猫猫旅行自动派出 + 到站领取
+      # WILDWORK_GROWTH_TRAVEL_LOCATION: "1"    # 目的地 1~4
+
+    ports:
+      - "7863:7863"
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:7863/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
