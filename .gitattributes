@@ -1,0 +1,43 @@
+# 统一换行符策略。
+#
+# 必须在 Windows 上显式声明：PortableGit 的全局配置里 core.autocrlf=true，
+# 会把文本文件在 checkout 时转成 CRLF —— 而 docker/ 下的 shell 脚本一旦带 CRLF，
+# 在容器或 NAS 上执行会报
+#     /bin/sh^M: bad interpreter: No such file or directory
+# 或抛出难以理解的语法错误。文件在编辑器里看起来完全正常，排查成本很高。
+
+# shell 脚本必须保持 LF
+*.sh text eol=lf
+docker/*.sh text eol=lf
+
+# Dockerfile 同理：CRLF 会让 RUN / COPY 指令带上 \r 而失败
+Dockerfile text eol=lf
+docker/Dockerfile text eol=lf
+
+# Go 源码与模块文件
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+
+# 配置、清单、文档
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+
+# Windows 批处理必须 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制：不做任何转换
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.exe binary
+*.tar binary
+*.gz binary
+*.zip binary
