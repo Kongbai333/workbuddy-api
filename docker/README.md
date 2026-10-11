@@ -104,8 +104,9 @@ sh docker/build-image.sh          # 构建 + 导出 tar + SHA256SUMS 到 docker/
 |---|---|
 | 面板内完成 OAuth 轮询 | WorkBuddy、WorkBuddy AI、TraeWork、Qoder（三个变体）、QwenWork、小浣熊 |
 | 需从本机官方客户端导入凭据 | MonkeyCode、Loomy |
-| 匿名通道（无需账号） | OpenCodeZen |
 | 需从浏览器 Cookie 粘贴令牌 | 智谱清言 GLM |
+
+> 注：OpenCodeZen（匿名免费通道）已停用，面板不显示该渠道。
 
 > ⚠️ 导入型渠道（MonkeyCode / Loomy）依赖**本机已登录的官方客户端**，容器里取不到这类凭据。
 
