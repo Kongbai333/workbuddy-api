@@ -4,7 +4,9 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/url"
 	"os"
@@ -230,6 +232,34 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	return c, nil
+}
+
+// LoadOrCreate 读配置；文件不存在时用默认值创建（**并应用 WILDWORK_* 环境变量**）。
+// 第二个返回值表示本次是否为首次创建。
+//
+// 为什么不让调用方自己 Default()：早期启动路径在「配置文件不存在」分支
+// 直接取 Default()，**跳过了 applyEnv**。而容器部署最典型的情形恰恰是
+// 「首次启动 + 无 config.json + 配置全来自环境变量」，此时 env 被静默忽略，
+// 程序用上默认的 listen=127.0.0.1 与默认 API key，表现是
+// 「容器起来了但 7863 端口不通」，而日志里没有任何异常 —— 很难定位。
+func LoadOrCreate(path string) (*Config, bool, error) {
+	c, err := Load(path)
+	if err == nil {
+		return c, false, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, false, err
+	}
+	c = Default()
+	applyEnv(c)
+	if err := c.normalize(); err != nil {
+		return nil, false, err
+	}
+	// 落盘失败不阻断启动（与既有行为一致）：配置在内存中依然可用。
+	if err := Save(c, path); err != nil {
+		fmt.Fprintf(os.Stderr, "write default config: %v\n", err)
+	}
+	return c, true, nil
 }
 
 // Save 以 0600 原子写回配置。

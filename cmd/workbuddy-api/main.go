@@ -26,6 +26,14 @@ import (
 	"syscall"
 	"time"
 
+	// 内嵌 IANA 时区数据库。
+	//
+	// 精简基础镜像（alpine 等）与部分裸机 Linux 不提供 /usr/share/zoneinfo，
+	// 此时 Go 无法解析 TZ=Asia/Shanghai，time.Local 会**静默退化为 UTC** ——
+	// 定时签到将按 UTC 时刻触发（北京时间 17:00 / 05:00，而非 09:00 / 21:00），
+	// 且日志里看不出任何异常。内嵌后二进制自带时区表，与运行环境解耦（约 +450KB）。
+	_ "time/tzdata"
+
 	"workbuddy-api/internal/app"
 	"workbuddy-api/internal/auth"
 	"workbuddy-api/internal/config"
@@ -93,8 +101,6 @@ func main() {
 		os.Exit(0)
 	}
 
-	cfgPath := "config.json"
-	cfg, err := config.Load(cfgPath)
 	// --autostart 由开机自启项附带：开机启动不弹提示
 	// --no-tray 无头模式（无桌面 Linux/服务器）
 	// --import-from <dir> 首次启动时显式指定旧项目目录（导入账号凭据）
@@ -108,21 +114,19 @@ func main() {
 			noTray = true
 		}
 	}
+	cfgPath := "config.json"
 	// firstRun：本次启动时配置文件**本来不存在**（真首次启动）。
 	// 用于「从旧项目导入账号凭据」的触发判据 —— 必须是真首次，
 	// 否则每次启动都去探测旧目录，行为不可预期。
-	firstRun := false
+	//
+	// 用 LoadOrCreate 而非 Load + 自行 Default()：后者会跳过 WILDWORK_* 环境变量
+	// 覆盖，使「纯 env 部署」（容器/Docker Compose 的典型用法）静默失效。
+	cfg, firstRun, err := config.LoadOrCreate(cfgPath)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			firstRun = true
-			log.Printf("config.json 不存在，使用默认配置并生成")
-			cfg = config.Default()
-			if err := config.Save(cfg, cfgPath); err != nil {
-				log.Printf("write default config: %v", err)
-			}
-		} else {
-			fatal("加载配置失败：%v\n\n请检查 config.json 后重新启动", err)
-		}
+		fatal("加载配置失败：%v\n\n请检查 config.json 后重新启动", err)
+	}
+	if firstRun {
+		log.Printf("config.json 不存在，已按默认值 + WILDWORK_* 环境变量生成")
 	}
 	// 首次启动：从旧项目目录导入账号凭据（旧项目 workbuddy-wild 原样保留，不受影响）。
 	// 只复制 auths/，不复制 data/（冷却与签到状态属运行时产物）。
