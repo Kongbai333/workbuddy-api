@@ -27,6 +27,12 @@ go.sum text eol=lf
 .gitignore text eol=lf
 .gitattributes text eol=lf
 
+# 面板静态资源（Go embed 进二进制，浏览器对 CRLF 也能解析，
+# 但统一 LF 可避免不同机器上反复出现整文件 diff）
+*.html text eol=lf
+*.css text eol=lf
+*.js text eol=lf
+
 # Windows 批处理必须 CRLF
 *.bat text eol=crlf
 *.cmd text eol=crlf
