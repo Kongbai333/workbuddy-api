@@ -143,3 +143,11 @@ func AutostartEnabled() bool {
 func OpenWithTextEditor(path string) error {
 	return exec.Command("open", "-a", "TextEdit", path).Start()
 }
+
+// AcquireSingleInstance macOS：当前为无操作（恒返回 true）。
+//
+// 单实例保护仅在 Windows 实现了真实版本 —— 那里的 CreateMutex 句柄
+// 由系统在进程退出时自动释放，不存在崩溃后遗留陈旧锁的问题。
+// macOS/Linux 若用锁文件方案则需要额外的陈旧锁检测，且本项目在
+// 这两个平台的重复启动会因端口被占而立刻失败，危害有限，故暂不启用。
+func AcquireSingleInstance(name string) bool { return true }

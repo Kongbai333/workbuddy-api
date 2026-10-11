@@ -38,3 +38,8 @@ func AutostartEnabled() bool { return false }
 
 // OpenWithTextEditor 其他平台：xdg-open。
 func OpenWithTextEditor(path string) error { return exec.Command("xdg-open", path).Start() }
+
+// AcquireSingleInstance 其他平台：当前为无操作（恒返回 true）。
+// 理由同 platform_darwin.go —— 真实实现只在 Windows。
+// Linux 下通常以 --no-tray 无头运行，重复启动会因端口被占而立即失败。
+func AcquireSingleInstance(name string) bool { return true }

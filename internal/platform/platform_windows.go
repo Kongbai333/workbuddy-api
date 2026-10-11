@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"unsafe"
 
@@ -193,6 +194,44 @@ func AutostartEnabled() bool {
 func OpenWithTextEditor(path string) error {
 	cmd := exec.Command("notepad.exe", path)
 	return cmd.Start()
+}
+
+// ---------------------------------------------------------------------------
+// 进程级单实例锁
+// ---------------------------------------------------------------------------
+
+var (
+	singleInstanceMu     sync.Mutex
+	singleInstanceHandle windows.Handle
+)
+
+// AcquireSingleInstance 申请进程级单实例锁；返回 false 表示已有实例在运行。
+//
+// 必须在 HTTP 服务 / 调度器**之前**调用。原因：若先启动 HTTP 再查锁，
+// 第二个实例会因端口被占用而陷入 bind 失败 —— 用户看到的是
+// 「进程起来了但面板打不开」的僵尸进程（本项目基线的实测教训）。
+//
+// 实现选型：CreateMutex 而非锁文件。mutex 句柄由系统在进程退出时**自动释放**，
+// 因此不存在崩溃后遗留陈旧锁的问题；锁文件方案做不到这一点。
+//
+// 命名空间用 `Local\` 而非 `Global\`：程序是「每登录会话一个实例」的语义，
+// Local 无需额外权限，也避免跨会话（如远程桌面）互相干扰。
+func AcquireSingleInstance(name string) bool {
+	singleInstanceMu.Lock()
+	defer singleInstanceMu.Unlock()
+	if singleInstanceHandle != 0 {
+		return true // 本进程已持有
+	}
+	h, err := windows.CreateMutex(nil, false, windows.StringToUTF16Ptr(`Local\`+name))
+	if err == windows.ERROR_ALREADY_EXISTS {
+		return false
+	}
+	if err != nil {
+		// 其他错误（权限等）：不阻塞启动，放行 —— 宁可重复启动也不让程序起不来
+		return true
+	}
+	singleInstanceHandle = h
+	return true
 }
 
 func fileExists(p string) bool {

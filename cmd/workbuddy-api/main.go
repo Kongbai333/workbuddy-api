@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -73,10 +74,30 @@ func main() {
 		os.Exit(0)
 	}
 
+	// 进程级单实例锁。
+	//
+	// ⚠️ 位置很关键：必须放在**浣熊回调之后**。回调是「非守护」调用
+	// （`--raccoon-callback <深链>`），需要在守护进程已在运行时也能执行；
+	// 若在它之前抢锁，回调进程会被拒 → 授权码落不了盘 → 登录链路断掉。
+	//
+	// 同时必须放在 HTTP 服务 / 调度器之前：本项目的基线曾出现过
+	// 「先起 HTTP 再查锁」导致第二个实例 bind 失败、留下僵尸进程的问题。
+	if !platform.AcquireSingleInstance("WorkBuddy-API-SingleInstance") {
+		log.Printf("已有实例在运行，本实例退出")
+		// 交互式启动时给用户一个可见反馈（无头模式只写日志）
+		if !slices.Contains(os.Args[1:], "--no-tray") {
+			platform.InfoBox("WorkBuddy-API",
+				"程序已在运行。\n\n"+
+					"请从右下角托盘图标打开管理面板，或先在托盘菜单中退出后再启动。")
+		}
+		os.Exit(0)
+	}
+
 	cfgPath := "config.json"
 	cfg, err := config.Load(cfgPath)
 	// --autostart 由开机自启项附带：开机启动不弹提示
 	// --no-tray 无头模式（无桌面 Linux/服务器）
+	// --import-from <dir> 首次启动时显式指定旧项目目录（导入账号凭据）
 	autostart := false
 	noTray := false
 	for _, arg := range os.Args[1:] {
@@ -87,8 +108,13 @@ func main() {
 			noTray = true
 		}
 	}
+	// firstRun：本次启动时配置文件**本来不存在**（真首次启动）。
+	// 用于「从旧项目导入账号凭据」的触发判据 —— 必须是真首次，
+	// 否则每次启动都去探测旧目录，行为不可预期。
+	firstRun := false
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
+			firstRun = true
 			log.Printf("config.json 不存在，使用默认配置并生成")
 			cfg = config.Default()
 			if err := config.Save(cfg, cfgPath); err != nil {
@@ -98,6 +124,9 @@ func main() {
 			fatal("加载配置失败：%v\n\n请检查 config.json 后重新启动", err)
 		}
 	}
+	// 首次启动：从旧项目目录导入账号凭据（旧项目 workbuddy-wild 原样保留，不受影响）。
+	// 只复制 auths/，不复制 data/（冷却与签到状态属运行时产物）。
+	maybeFirstRunImport(cfg, importFromArg(os.Args[1:]), firstRun)
 	// 管理面板鉴权：监听非环回地址（0.0.0.0 / 网卡 IP）时必须设置管理员密码，
 	// 否则局域网任何设备都能无凭据打开面板、退出程序。启动层与面板保存层双重把关。
 	if !cfg.Listen.IsLoopback() && strings.TrimSpace(cfg.AdminPass) == "" {
