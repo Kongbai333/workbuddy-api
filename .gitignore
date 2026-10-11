@@ -1,0 +1,35 @@
+# 编译产物
+dist/
+cmd/workbuddy-api/rsrc_windows_amd64.syso
+cmd/workbuddy-api/icon.ico
+
+# 运行时数据（含敏感凭据）
+data/
+auths/
+config.json
+*.log
+
+# 参考项目（第三方克隆，不纳入版本控制）
+ref/
+
+# 文档目录白名单制：默认全部不提交，仅显式反选（!）的文档入库。
+# 新增需要入库的文档时，在下方追加一行 `!docs/<文件名>`。
+docs/*
+!docs/三接口兼容改造备忘.md
+!docs/用量积分流水记账备忘.md
+
+# 临时文件
+temp/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 系统
+.DS_Store
+Thumbs.db
+github_token.txt
+HANDOFF.md
+GO多平台发布备忘.md
