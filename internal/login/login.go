@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"workbuddy-api/internal/auth"
 )
 
 // 上游常量（国内版 / 国际版）。
@@ -256,8 +258,8 @@ func SaveAuth(authDir string, r Result) (string, error) {
 	}
 	doc := map[string]any{
 		"auth": map[string]any{
-			"accessToken":  r.AccessToken,
-			"refreshToken": r.RefreshToken,
+			"accessToken":  auth.EncryptSecret(r.AccessToken),
+			"refreshToken": auth.EncryptSecret(r.RefreshToken),
 			"expiresAt":    expiresAt,
 			"domain":       r.Domain,
 		},

@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"workbuddy-api/internal/auth"
 )
 
 // 与 qoderwork2api cmd/login 一致的常量（CN only）。
@@ -154,8 +156,8 @@ func SaveAuth(authDir string, r Result, machineID, machineToken, machineType str
 	}
 	doc := map[string]any{
 		"auth": map[string]any{
-			"accessToken":  r.AccessToken,
-			"refreshToken": r.RefreshToken,
+			"accessToken":  auth.EncryptSecret(r.AccessToken),
+			"refreshToken": auth.EncryptSecret(r.RefreshToken),
 			"expiresAt":    expiresAt,
 			"domain":       "qoder.com.cn",
 			"machineId":    machineID,

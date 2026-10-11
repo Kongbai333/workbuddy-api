@@ -107,8 +107,24 @@ sh docker/build-image.sh          # 构建 + 导出 tar + SHA256SUMS 到 docker/
 | 匿名通道（无需账号） | OpenCodeZen |
 | 需从浏览器 Cookie 粘贴令牌 | 智谱清言 GLM |
 
-> ⚠️ 导入型渠道（MonkeyCode / Loomy）依赖**本机已登录的官方客户端**，容器里取不到。
-> 这类账号请在宿主机上跑一次导入，再把生成的 `auths/*.json` 拷进 `/data/auths/`。
+> ⚠️ 导入型渠道（MonkeyCode / Loomy）依赖**本机已登录的官方客户端**，容器里取不到这类凭据。
+
+### ⚠️ 凭据是平台绑定的（重要，别踩）
+
+Windows 上生成的 `auths/*.json` 里，token 是 **DPAPI 密文**（`dpapi:` 前缀），
+密文与「当前 Windows 用户」绑定，**在 Linux / 容器里无法解密**。
+
+| 方向 | 能否直接拷贝 auths/ |
+|---|---|
+| Windows → Linux / 容器 | ❌ **不能**。密文无法解密，账号会加载失败，日志打印「检测到 Windows DPAPI 密文，当前平台无法解密」 |
+| Linux / 容器 → Windows | ✅ 可以。Linux 侧不做加密（明文 + 文件权限保护） |
+
+所以**不要**把 Windows 上跑出来的 auths 目录拷进容器 —— 请在容器所在环境
+**用管理面板重新登录一次**（面板地址 `http://<NAS_IP>:7863/`）。
+
+这是刻意的设计而不是缺陷：DPAPI 的密钥在 Windows 用户配置里，
+跨平台「解密」在密码学上不可能；Linux 侧若自造固定密钥加密，
+只是制造安全假象，强度还不如直接依赖文件权限。
 
 ---
 

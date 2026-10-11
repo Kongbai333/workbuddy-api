@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"workbuddy-api/internal/glm"
+
+	"workbuddy-api/internal/auth"
 )
 
 // LoginURL 用户需要在浏览器里打开的地址。
@@ -65,8 +67,8 @@ func SaveAuth(authDir string, r Result) (string, error) {
 	}
 	doc := map[string]any{
 		"auth": map[string]any{
-			"accessToken":  r.AccessToken,
-			"refreshToken": r.RefreshToken,
+			"accessToken":  auth.EncryptSecret(r.AccessToken),
+			"refreshToken": auth.EncryptSecret(r.RefreshToken),
 			"expiresAt":    r.ExpiresAt,
 			"domain":       "chatglm.cn",
 		},

@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"workbuddy-api/internal/workbuddyai"
+
+	"workbuddy-api/internal/auth"
 )
 
 // ErrPending 登录尚未完成（浏览器还没登录完）。
@@ -150,8 +152,8 @@ func SaveAuth(authDir string, r Result) (string, error) {
 	}
 	doc := map[string]any{
 		"auth": map[string]any{
-			"accessToken":  r.AccessToken,
-			"refreshToken": r.RefreshToken,
+			"accessToken":  auth.EncryptSecret(r.AccessToken),
+			"refreshToken": auth.EncryptSecret(r.RefreshToken),
 			"expiresAt":    expiresAt,
 			"domain":       domain,
 		},

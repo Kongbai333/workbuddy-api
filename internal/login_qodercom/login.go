@@ -19,12 +19,14 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"workbuddy-api/internal/auth"
 )
 
 // 与 qoder2api 一致的常量（CN only）。
 const (
-	OAuthWebsite   = "https://qoder.com"        // COM 授权页（国际站）
-	OAuthOpenapi   = "https://openapi.qoder.sh" // COM 业务 API（设备流 poll）
+	OAuthWebsite = "https://qoder.com"        // COM 授权页（国际站）
+	OAuthOpenapi = "https://openapi.qoder.sh" // COM 业务 API（设备流 poll）
 	// OAuthClientID qoder2api CN/Global 共用的 OAuth 客户端 ID（account/oauth.go:25）。
 	OAuthClientID = "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb"
 	clientUA      = "Go-http-client/2.0"
@@ -158,8 +160,8 @@ func SaveAuth(authDir string, r Result, machineID, machineToken, machineType str
 	}
 	doc := map[string]any{
 		"auth": map[string]any{
-			"accessToken":  r.AccessToken,
-			"refreshToken": r.RefreshToken,
+			"accessToken":  auth.EncryptSecret(r.AccessToken),
+			"refreshToken": auth.EncryptSecret(r.RefreshToken),
 			"expiresAt":    expiresAt,
 			"domain":       "qoder.com",
 			"machineId":    machineID,

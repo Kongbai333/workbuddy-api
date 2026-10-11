@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"workbuddy-api/internal/auth"
 	"workbuddy-api/internal/monkeycode"
 	"workbuddy-api/internal/provider"
 )
@@ -410,6 +411,12 @@ func (a *App) writeAuthFile(prefix, uid string, doc authDoc) (string, error) {
 	if err := os.MkdirAll(a.cfg.AuthDir, 0o700); err != nil {
 		return "", fmt.Errorf("创建凭据目录失败：%w", err)
 	}
+	// 落盘前加密 token（Windows 用 DPAPI；其他平台明文直通，见 internal/auth/secure_other.go）。
+	// 集中在这里做：MonkeyCode / Loomy / 小浣熊 三条导入路径自动覆盖，
+	// 避免各调用点各写一遍而漏掉其中一条 —— 漏掉不会立刻报错，
+	// 只会让该渠道的凭据以明文落盘（与其他渠道不一致）。
+	doc.Auth.AccessToken = auth.EncryptSecret(doc.Auth.AccessToken)
+	doc.Auth.RefreshToken = auth.EncryptSecret(doc.Auth.RefreshToken)
 	raw, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return "", err

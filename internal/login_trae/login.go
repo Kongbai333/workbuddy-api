@@ -237,7 +237,7 @@ func SaveAuth(authDir string, r Result) (string, error) {
 		return "", fmt.Errorf("missing uid in result")
 	}
 	doc := map[string]any{
-		"auth":    map[string]any{"accessToken": r.AccessToken, "refreshToken": r.RefreshToken, "expiresAt": r.ExpiresAt, "domain": r.Domain, "apiHost": r.ApiHost, "machineId": r.MachineID, "deviceId": r.DeviceID},
+		"auth":    map[string]any{"accessToken": auth.EncryptSecret(r.AccessToken), "refreshToken": auth.EncryptSecret(r.RefreshToken), "expiresAt": r.ExpiresAt, "domain": r.Domain, "apiHost": r.ApiHost, "machineId": r.MachineID, "deviceId": r.DeviceID},
 		"account": map[string]any{"uid": r.UID, "enterpriseId": r.EnterpriseID, "nickname": r.Nickname},
 	}
 	raw, err := json.MarshalIndent(doc, "", "  ")

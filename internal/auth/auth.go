@@ -213,6 +213,14 @@ func Parse(raw []byte) (*Auth, error) {
 			Nickname:      f.Nickname,
 		}
 	}
+	// 透明解密 DPAPI 加密的 token（Windows 用系统 DPAPI；其他平台见 secure_other.go）。
+	//
+	// 位置很关键：必须在下面的「非空校验」**之前**。在 Linux 上 dpapi: 密文会被
+	// 解成空串（DPAPI 密钥在 Windows 用户配置里，跨平台无法还原），此时应让校验
+	// 直接判定「凭证不可用」，而不是把密文当 token 发给上游 ——
+	// 那样只会换回一堆难以理解的 401，排查成本极高。
+	a.AccessToken = DecryptSecret(a.AccessToken)
+	a.RefreshToken = DecryptSecret(a.RefreshToken)
 	if strings.TrimSpace(a.AccessToken) == "" {
 		return nil, fmt.Errorf("parse_error: missing accessToken")
 	}
@@ -235,8 +243,10 @@ func (a *Auth) saveAtomicLocked() error {
 	}
 	doc := map[string]any{
 		"auth": map[string]any{
-			"accessToken":  a.AccessToken,
-			"refreshToken": a.RefreshToken,
+			// 落盘前加密（Windows 用 DPAPI；其他平台见 secure_other.go，明文直通）。
+			// EncryptSecret 对空值与已是密文的值原样返回，可安全重复调用。
+			"accessToken":  EncryptSecret(a.AccessToken),
+			"refreshToken": EncryptSecret(a.RefreshToken),
 			"expiresAt":    a.ExpiresAt,
 			"domain":       a.Domain,
 			"apiHost":      a.ApiHost,
@@ -575,6 +585,9 @@ func parseAllowMissingAccessToken(raw []byte) (*Auth, error) {
 			Nickname:     flat.Nickname,
 		}
 	}
+	// 透明解密（与 Parse 一致；必须在校验之前）
+	a.AccessToken = DecryptSecret(a.AccessToken)
+	a.RefreshToken = DecryptSecret(a.RefreshToken)
 	// glm 的凭据本体是 refresh_token：只要它非空即可用
 	if strings.TrimSpace(a.RefreshToken) == "" {
 		return nil, fmt.Errorf("parse_error: missing refreshToken")
