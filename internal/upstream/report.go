@@ -106,10 +106,25 @@ func (c *Client) ReportChatActivity(a *auth.Auth, conversationID, requestID stri
 	})
 }
 
+// ChatRequestSendEventModel 构造一条**对齐指定模型**的 chat_request_send 事件。
+//
+// 用途：部分任务按「用过哪个模型」判定（如 Model_chat_GLM5.2、black_cat 夜猫子），
+// 此时 requestModelId / requestModelName 必须与任务要求的模型一致 ——
+// 用默认模型上报不会计入该任务进度。
+func ChatRequestSendEventModel(a *auth.Auth, conversationID, requestID, modelID, modelName string) map[string]any {
+	ev := ChatRequestSendEvent(a, conversationID, requestID)
+	ev["requestModelId"] = modelID
+	ev["requestModelName"] = modelName
+	return ev
+}
+
 // ChatRequestSendEvent 构造一条 chat_request_send 事件（与官方桌面端同构）。
 //
 // 字段口径来自实测抓包；`mode` 固定 "craft"，耗时字段按官方默认填。
 // requestID 为空时回退为 conversationID（单轮场景）。
+//
+// ⚠️ userId 必填：缺失时上游返回 200 但**静默丢弃**事件 —— 表现为
+// 「上报成功却不涨进度」，极难定位。
 func ChatRequestSendEvent(a *auth.Auth, conversationID, requestID string) map[string]any {
 	if requestID == "" {
 		requestID = conversationID

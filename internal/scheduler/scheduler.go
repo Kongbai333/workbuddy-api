@@ -65,6 +65,15 @@ type Config struct {
 	GrowthTravel bool
 	// GrowthTravelLocation 旅行目的地（1~4）；0 或越界一律取 1。
 	GrowthTravelLocation int
+
+	// GrowthTasks 成长任务「一键完成」自动执行（默认关闭）。
+	//
+	// 风险最高的一项：靠伪造客户端行为事件点亮进度，事件形状来自第三方逆向，
+	// 未独立实测。关闭时面板仍可手动触发；开启后跟随每日首个签到时刻执行一次。
+	GrowthTasks bool
+	// GrowthTasksIncludeMP 自动执行时是否包含小程序口径任务（默认关闭：
+	// mp 任务要求 45s/条的节奏，一项可能跑几分钟）。
+	GrowthTasksIncludeMP bool
 }
 
 // Scheduler 调度器。
@@ -87,6 +96,15 @@ type Scheduler struct {
 	// 与 checkinDone 同为 retryMu 保护；置位与检查必须原子 ——
 	// 否则并发的两次触发会同时通过检查，导致重复兑换/重复抽奖。
 	growthDoneDay string
+
+	// growthTasksDoneDay 成长任务「一键完成」当日已执行标记（"YYYY-MM-DD"）。
+	// 与 growthDoneDay 分开：两项自动化各自独立开关，
+	// 共用标记会让先触发的一方吃掉另一方的执行机会。
+	growthTasksDoneDay string
+
+	// growthMu 保护 growth 开关（面板可热更新，同时被定时循环读取）。
+	growthMu sync.RWMutex
+	growth   growthOpts
 }
 
 // New 构建。
@@ -116,7 +134,55 @@ func New(cfg Config) *Scheduler {
 	if cfg.ExpiringThreshold <= 0 {
 		cfg.ExpiringThreshold = 24 * time.Hour
 	}
-	return &Scheduler{cfg: cfg, wake: make(chan struct{}, 1), checkinDone: map[string]bool{}}
+	return &Scheduler{
+		cfg: cfg, wake: make(chan struct{}, 1), checkinDone: map[string]bool{},
+		growth: growthOpts{
+			redeemStreak:   cfg.GrowthRedeemStreak,
+			travel:         cfg.GrowthTravel,
+			travelLocation: cfg.GrowthTravelLocation,
+			tasks:          cfg.GrowthTasks,
+			tasksMP:        cfg.GrowthTasksIncludeMP,
+		},
+	}
+}
+
+// growthOpts 成长中心自动化的运行时开关。
+//
+// 为什么单独存一份而不直接读 cfg：面板保存后需要**热生效**（不重启），
+// 而 cfg 是构造时定下的值，且被多个 goroutine 读（定时循环 + 面板请求），
+// 直接改写会有数据竞争。
+type growthOpts struct {
+	redeemStreak   bool
+	travel         bool
+	travelLocation int
+	tasks          bool
+	tasksMP        bool
+}
+
+// SetGrowthOptions 热更新成长中心开关（面板保存后调用）。
+func (s *Scheduler) SetGrowthOptions(redeemStreak, travel bool, travelLocation int, tasks, tasksMP bool) {
+	s.growthMu.Lock()
+	defer s.growthMu.Unlock()
+	s.growth = growthOpts{
+		redeemStreak:   redeemStreak,
+		travel:         travel,
+		travelLocation: travelLocation,
+		tasks:          tasks,
+		tasksMP:        tasksMP,
+	}
+}
+
+// growthOptions 读取当前开关（返回副本，调用方无需持锁）。
+func (s *Scheduler) growthOptions() growthOpts {
+	s.growthMu.RLock()
+	defer s.growthMu.RUnlock()
+	return s.growth
+}
+
+// GrowthOptions 导出当前开关（供面板回显）。
+func (s *Scheduler) GrowthOptions() (redeemStreak, travel bool, travelLocation int, tasks, tasksMP bool) {
+	o := s.growthOptions()
+	return o.redeemStreak, o.travel, o.travelLocation, o.tasks, o.tasksMP
 }
 
 // schedule 返回当前签到分钟/保活小时配置的副本。
@@ -303,6 +369,8 @@ func (s *Scheduler) Run(ctx context.Context) {
 					// 命中配置时刻（非窗口重试）时跟随执行成长自动化。
 					// 只认起点时刻：窗口内每分钟都跑会重复触发。
 					s.runGrowthOncePerDay(now)
+					// 成长任务「一键完成」（独立开关 + 独立日标记）。
+					s.runGrowthTasksOncePerDay(now)
 				} else {
 					s.RunCheckinNow()
 				}

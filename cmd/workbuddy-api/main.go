@@ -332,6 +332,8 @@ func main() {
 		GrowthRedeemStreak:   cfg.Schedule.GrowthRedeemStreak,
 		GrowthTravel:         cfg.Schedule.GrowthTravel,
 		GrowthTravelLocation: cfg.Schedule.GrowthTravelLocation,
+		GrowthTasks:          cfg.Schedule.GrowthTasks,
+		GrowthTasksIncludeMP: cfg.Schedule.GrowthTasksIncludeMP,
 	})
 	trSch := scheduler.New(scheduler.Config{Pool: trPool, Upstream: trUp, Name: "traework", CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg})
 	// Qoder 无签到活动：调度器只做 token keepalive（每日 refresh 保活）。

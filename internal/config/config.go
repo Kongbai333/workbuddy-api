@@ -146,6 +146,21 @@ type Config struct {
 
 		// GrowthTravelLocation 旅行目的地（1~4，实测收益/时长区间相同）。0 视为 1。
 		GrowthTravelLocation int `json:"growth_travel_location,omitempty"`
+
+		// GrowthTasks 成长任务「一键完成」自动执行（默认关闭）。
+		//
+		// 这是**风险最高**的一项：它靠伪造客户端行为事件点亮任务进度，
+		// 第三方逆向所得、本项目未独立实测；字段一旦与上游期望不符，
+		// 上报会返回 200 却不入账（表现为「跑了但没涨」）。
+		//
+		// 关闭时面板仍可**手动**触发（POST /api/account/tasks），
+		// 建议先手动跑一个账号核对结果，确认无误再打开定时自动。
+		GrowthTasks bool `json:"growth_tasks,omitempty"`
+		// GrowthTasksIncludeMP 自动执行时是否包含小程序口径任务。
+		//
+		// 默认关闭：mp 任务有反作弊（连发会被回滚），要求 45s/条的节奏，
+		// 一项就可能跑几分钟，不适合放在无人的定时路径上。
+		GrowthTasksIncludeMP bool `json:"growth_tasks_include_mp,omitempty"`
 	} `json:"schedule"`
 
 	Upstream struct {

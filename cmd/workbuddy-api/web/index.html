@@ -51,6 +51,7 @@
         <div class="pa-group pa-left">
           <button class="btn primary" id="btnRefreshAll">刷新积分</button>
           <button class="btn" id="btnCheckinAll">全部签到</button>
+          <button class="btn" id="btnTasksAll" title="执行成长任务（会真实改变账号状态，默认不自动执行）">一键做任务</button>
         </div>
         <!-- 中间弹性空白由 flex:1 撑开 -->
         <div class="pa-spacer"></div>
@@ -73,6 +74,7 @@
       </div>
     </div>
     <div id="creditSummary" class="credit-summary hidden" title="各渠道积分汇总（与账号卡片同源）"></div>
+    <div id="taskPanel" class="task-panel hidden"></div>
     <div id="acctList" class="acct-grid"></div>
     <div id="acctEmpty" class="empty hidden">还没有账号，点击上方按钮添加</div>
     </div>
@@ -338,6 +340,40 @@
           <label class="lbl wide">开机自启</label>
           <label class="switch"><input type="checkbox" id="chkAutostart"><span class="slider"></span></label>
           <span class="hint" style="margin-left:8px">程序随系统启动自动运行</span>
+        </div>
+      </div>
+
+      <!-- 成长中心自动化（默认全关） -->
+      <div class="cfg-section">
+        <div class="cfg-heading">成长中心自动化<span class="cfg-badge-warn">默认关闭</span></div>
+        <div class="hint" style="margin:0 0 8px">
+          以下四项会<b>真实改变账号状态</b>（兑换档位、消耗抽奖次数、派出旅行、点亮任务进度并领奖），
+          与签到这类可重复执行的动作不同 —— 抽奖次数用掉不可撤销。建议先手动执行一两次核对结果，再开启定时自动。
+        </div>
+        <div class="row" style="margin-top:4px">
+          <label class="switch"><input type="checkbox" id="chkGrowthRedeem"><span class="slider"></span></label>
+          <span class="hint" style="margin-left:8px">连登档位自动兑换并抽完抽奖次数</span>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <label class="switch"><input type="checkbox" id="chkGrowthTravel"><span class="slider"></span></label>
+          <span class="hint" style="margin-left:8px">猫猫旅行自动派出与到站领取</span>
+          <label class="lbl" style="margin-left:16px">目的地</label>
+          <select id="selTravelLoc" class="input" style="width:70px">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <label class="switch"><input type="checkbox" id="chkGrowthTasks"><span class="slider"></span></label>
+          <span class="hint" style="margin-left:8px">成长任务「一键完成」随每日首个签到时刻自动执行</span>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <label class="switch"><input type="checkbox" id="chkGrowthTasksMP"><span class="slider"></span></label>
+          <span class="hint" style="margin-left:8px">
+            自动执行时包含小程序任务（有反作弊：每条间隔 45 秒，一项可能跑几分钟）
+          </span>
         </div>
       </div>
 

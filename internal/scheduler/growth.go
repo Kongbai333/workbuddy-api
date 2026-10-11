@@ -21,6 +21,7 @@ package scheduler
 
 import (
 	"log"
+	"strings"
 	"time"
 
 	"workbuddy-api/internal/auth"
@@ -50,7 +51,8 @@ func (s *Scheduler) growthAutomator() growthAutomator {
 
 // growthEnabled 报告是否配置了任一项成长自动化。
 func (s *Scheduler) growthEnabled() bool {
-	return s.cfg.GrowthRedeemStreak || s.cfg.GrowthTravel
+	o := s.growthOptions()
+	return o.redeemStreak || o.travel
 }
 
 // RunGrowthNow 立即对所有账号执行成长中心自动化（受配置开关约束）。
@@ -69,9 +71,10 @@ func (s *Scheduler) RunGrowthNow() {
 	}
 
 	name := s.name()
+	o := s.growthOptions()
 	accounts := s.cfg.Pool.List()
 	log.Printf("growth batch start platform=%s accounts=%d redeem=%t travel=%t",
-		name, len(accounts), s.cfg.GrowthRedeemStreak, s.cfg.GrowthTravel)
+		name, len(accounts), o.redeemStreak, o.travel)
 
 	skip := growthSkipper(nil)
 	if sk, ok := s.cfg.Upstream.(growthSkipper); ok {
@@ -97,7 +100,8 @@ func (s *Scheduler) RunGrowthNow() {
 func (s *Scheduler) runGrowthFor(ga growthAutomator, skip growthSkipper, a *auth.Auth) {
 	name := s.name()
 
-	if s.cfg.GrowthRedeemStreak {
+	o := s.growthOptions()
+	if o.redeemStreak {
 		redeemed, drawn, msg, err := ga.GrowthRedeemAndDraw(a)
 		switch {
 		case err != nil:
@@ -113,7 +117,7 @@ func (s *Scheduler) runGrowthFor(ga growthAutomator, skip growthSkipper, a *auth
 		}
 	}
 
-	if s.cfg.GrowthTravel {
+	if o.travel {
 		msg, err := ga.GrowthTravelOnce(a, s.travelLocationID())
 		if err != nil {
 			if skip != nil && skip.IsGrowthUnsupported(err) {
@@ -129,10 +133,11 @@ func (s *Scheduler) runGrowthFor(ga growthAutomator, skip growthSkipper, a *auth
 
 // travelLocationID 返回收敛后的旅行目的地（1~4）。0 或越界一律取 1。
 func (s *Scheduler) travelLocationID() int {
-	if s.cfg.GrowthTravelLocation < 1 || s.cfg.GrowthTravelLocation > 4 {
+	loc := s.growthOptions().travelLocation
+	if loc < 1 || loc > 4 {
 		return 1
 	}
-	return s.cfg.GrowthTravelLocation
+	return loc
 }
 
 // runGrowthOncePerDay 当日首次命中配置签到时刻时，跟随执行成长自动化。
@@ -178,3 +183,104 @@ func (s *Scheduler) safeGo(fn func()) {
 // growthMaxRuntime 单轮成长自动化的兜底时长上限（仅用于日志提示，
 // 实际的网络超时由 Upstream 侧的 http.Client 控制）。
 const growthMaxRuntime = 5 * time.Minute
+
+// ---------------------------------------------------------------------------
+// 成长任务「一键完成」（风险最高，默认关闭）
+// ---------------------------------------------------------------------------
+
+// growthTasksRunner 由支持成长任务的渠道实现（当前仅 workbuddy 国内版）。
+//
+// 返回**基本类型**而非渠道包里的报告结构 —— 与 growthAutomator 同样的解耦约定：
+// 调度器不 import 具体渠道包，只看这一组「能不能跑、跑了什么」的信息。
+type growthTasksRunner interface {
+	// GrowthRunTasksOnce 对单个账号执行任务动作表，返回摘要与到账积分/能量。
+	// includeMP 决定是否包含小程序口径任务。
+	GrowthRunTasksOnce(a *auth.Auth, includeMP bool) (msg string, credit, energy int64, err error)
+	// GrowthTasksSupported 报告该渠道是否提供成长中心（否则静默跳过）。
+	GrowthTasksSupported() bool
+}
+
+// growthTasksRunner 探测。返回 nil 表示该渠道不支持。
+func (s *Scheduler) growthTasksRunner() growthTasksRunner {
+	gr, _ := s.cfg.Upstream.(growthTasksRunner)
+	return gr
+}
+
+// growthTasksEnabled 报告是否配置了成长任务自动执行。
+func (s *Scheduler) growthTasksEnabled() bool { return s.growthOptions().tasks }
+
+// runGrowthTasksOncePerDay 当日首次命中配置签到时刻时，跟随执行成长任务。
+//
+// 与 runGrowthOncePerDay 分开实现（各自独立开关、独立日标记）：
+// 用户可能只想要其中一项，共用标记会让先触发的一方吃掉另一方的执行机会。
+func (s *Scheduler) runGrowthTasksOncePerDay(now time.Time) {
+	if !s.growthTasksEnabled() {
+		return
+	}
+	day := now.Format("2006-01-02")
+	s.retryMu.Lock()
+	if s.growthTasksDoneDay == day {
+		s.retryMu.Unlock()
+		return
+	}
+	s.growthTasksDoneDay = day
+	s.retryMu.Unlock()
+
+	s.safeGo(func() { s.RunGrowthTasksNow() })
+}
+
+// RunGrowthTasksNow 立即对所有账号执行成长任务动作表（受配置开关约束）。
+//
+// 未开启开关时**不做任何网络请求**。单账号失败不中断整批。
+func (s *Scheduler) RunGrowthTasksNow() {
+	if !s.growthTasksEnabled() {
+		return
+	}
+	gr := s.growthTasksRunner()
+	if gr == nil || !gr.GrowthTasksSupported() {
+		log.Printf("growth tasks skip platform=%s reason=channel-unsupported", s.name())
+		return
+	}
+
+	name := s.name()
+	incMP := s.growthOptions().tasksMP
+	accounts := s.cfg.Pool.List()
+	log.Printf("growth tasks batch start platform=%s accounts=%d include_mp=%t", name, len(accounts), incMP)
+
+	for _, st := range accounts {
+		if st.Disabled {
+			continue
+		}
+		a := s.cfg.Pool.AuthByUID(st.UID)
+		if a == nil {
+			continue
+		}
+		msg, credit, energy, err := gr.GrowthRunTasksOnce(a, incMP)
+		if err != nil {
+			if IsGrowthUnsupportedErr(err) {
+				log.Printf("growth tasks platform=%s uid=%s 渠道不支持，跳过", name, a.UID)
+				return // 后续账号必然同样失败，整轮中止
+			}
+			log.Printf("growth tasks failed platform=%s uid=%s err=%v", name, a.UID, err)
+			continue
+		}
+		log.Printf("growth tasks ok platform=%s uid=%s credit=%d energy=%d msg=%s",
+			name, a.UID, credit, energy, msg)
+	}
+	log.Printf("growth tasks batch done platform=%s", name)
+}
+
+// IsGrowthUnsupportedErr 判断错误是否为「渠道不支持成长中心」。
+//
+// 调度器不 import 渠道包，故这里按错误**文本**做保守判断：只有明确的
+// 404 / not found / not support 才算，其余一律当作可继续的单账号失败。
+func IsGrowthUnsupportedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	m := strings.ToLower(err.Error())
+	return strings.Contains(m, "404") ||
+		strings.Contains(m, "not found") ||
+		strings.Contains(m, "not support") ||
+		strings.Contains(m, "unsupported")
+}

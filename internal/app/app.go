@@ -143,6 +143,12 @@ type App struct {
 	pricingFetched time.Time
 	pricingErr     string // 最近一次拉取错误
 	pricingBusy    bool   // 防并发刷新（启动刷新与面板触发可能重叠）
+
+	// taskMu 保护 taskRun（成长任务「一键完成」的异步执行状态）。
+	// 任务动辄跑几十秒到几分钟，同步 HTTP 会撞上前端/网关超时，
+	// 故改为「启动即返回 + 轮询进度」（见 tasks.go）。
+	taskMu  sync.Mutex
+	taskRun *taskRunState
 }
 
 // New 构建 App 并接管全局日志（写文件 + 环形缓冲）。
@@ -1884,6 +1890,9 @@ type AccountView struct {
 	LastCheckinOK  bool              `json:"last_checkin_ok"`
 	LastCheckinAt  string            `json:"last_checkin_at"`
 	LastCheckinMsg string            `json:"last_checkin_msg"`
+	// Growth 该账号所属渠道是否支持成长中心（决定面板是否显示「做任务」入口）。
+	// 成长中心目前仅 WorkBuddy 国内版提供。
+	Growth bool `json:"growth,omitempty"`
 }
 
 // State Web UI 初始数据。
@@ -1926,6 +1935,14 @@ type State struct {
 
 	// Proxies 单渠道上游代理（只读，保存走 POST /api/config/proxies）。
 	Proxies map[string]string `json:"proxies"`
+
+	// Growth 成长中心自动化开关（只读，保存走 POST /api/config/growth）。
+	//
+	// 四项均**默认关闭**：它们会真实改变账号状态（兑换档位、消耗抽奖次数、
+	// 派出旅行、点亮任务进度并领奖），与签到这类幂等动作不同。
+	Growth GrowthConfigView `json:"growth"`
+	// GrowthSupported 是否存在支持成长中心的渠道（决定面板按钮可用性）。
+	GrowthSupported bool `json:"growth_supported"`
 }
 
 // GetState 返回面板初始数据。
@@ -1973,6 +1990,8 @@ func (a *App) GetState() State {
 		st.Proxies[k] = v
 	}
 	st.Accounts = a.accountViews()
+	st.Growth = a.GrowthConfig()
+	st.GrowthSupported = a.GrowthSupported()
 	return st
 }
 
@@ -1998,6 +2017,7 @@ func (a *App) accountViews() []AccountView {
 			LastCheckinOK:   s.LastCheckinOK,
 			LastCheckinAt:   fmtTime(s.LastCheckinAt),
 			LastCheckinMsg:  s.LastCheckinMsg,
+			Growth:          a.channelSupportsGrowth(provider.Kind(group)),
 		})
 	}
 	// 面板固定渠道序展示：OpenCodeZen → WorkBuddyCN → WorkBuddyAI → QoderCN → QoderCOM → TraeWork → 千问办公
@@ -2364,6 +2384,45 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+	// 成长中心自动化开关（四项，默认全关）。保存后热更新到调度器，无需重启。
+	mux.HandleFunc("POST /api/config/growth", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			RedeemStreak   bool `json:"redeem_streak"`
+			Travel         bool `json:"travel"`
+			TravelLocation int  `json:"travel_location"`
+			Tasks          bool `json:"tasks"`
+			TasksIncludeMP bool `json:"tasks_include_mp"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			apiError(w, http.StatusBadRequest, "请求格式错误")
+			return
+		}
+		if err := a.SetGrowthConfig(req.RedeemStreak, req.Travel, req.TravelLocation,
+			req.Tasks, req.TasksIncludeMP); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+	// 成长任务「一键完成」：异步启动（立即返回），进度走 /api/account/tasks_status。
+	//
+	// 为什么异步：单账号要发几十个请求（含真实对话），多账号可到数分钟，
+	// 同步 HTTP 会撞上前端/反代超时，用户会以为「点了没反应」。
+	mux.HandleFunc("POST /api/account/tasks", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			UID       string `json:"uid"` // 空 = 全部账号
+			IncludeMP bool   `json:"include_mp"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := a.StartTaskRun(req.UID, req.IncludeMP); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": true})
+	})
+	mux.HandleFunc("GET /api/account/tasks_status", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, a.TaskRunView())
 	})
 	mux.HandleFunc("POST /api/account/nickname", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

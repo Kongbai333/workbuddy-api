@@ -264,3 +264,142 @@ func waitCalls(t *testing.T, counter *int, want int) {
 type errFakeGrowth struct{}
 
 func (errFakeGrowth) Error() string { return "fake growth error" }
+
+// ---------------------------------------------------------------------------
+// 成长任务「一键完成」（风险最高的一项）
+// ---------------------------------------------------------------------------
+
+// growthTasksStub 覆盖任务入口，记录调用（不触网）。
+//
+// 注意：growthStub 嵌入了 upstream.Client，故 GrowthRunTasksOnce 本会被提升；
+// 这里显式定义以拦截调用并记录参数。
+type growthTasksStub struct {
+	upstream.Client
+	taskCalls int
+	lastMP    bool
+	taskErr   error
+}
+
+func (g *growthTasksStub) GrowthRunTasksOnce(a *auth.Auth, includeMP bool) (string, int64, int64, error) {
+	g.taskCalls++
+	g.lastMP = includeMP
+	return "stub-tasks", 100, 5, g.taskErr
+}
+
+// ★ 核心护栏：成长任务开关关闭时零调用。
+// 这项会真实点亮任务进度并领奖，一旦「默认关闭」失效，
+// 用户会在不知情的情况下被改动账号状态。
+func TestGrowthTasksDisabledIsNoop(t *testing.T) {
+	stub := &growthTasksStub{}
+	s := newGrowthScheduler(stub, Config{}) // GrowthTasks 零值 = 关闭
+
+	s.RunGrowthTasksNow()
+
+	if stub.taskCalls != 0 {
+		t.Fatalf("开关关闭却执行了成长任务 %d 次", stub.taskCalls)
+	}
+}
+
+// 开启后应逐账号执行，且 includeMP 跟随配置。
+func TestGrowthTasksRunsWhenEnabled(t *testing.T) {
+	stub := &growthTasksStub{}
+	s := newGrowthScheduler(stub, Config{GrowthTasks: true, GrowthTasksIncludeMP: true})
+
+	s.RunGrowthTasksNow()
+
+	if stub.taskCalls != 1 {
+		t.Fatalf("应执行 1 次（1 个账号），得到 %d", stub.taskCalls)
+	}
+	if !stub.lastMP {
+		t.Fatal("includeMP 未传递给执行器")
+	}
+}
+
+// 渠道不支持成长中心时应静默跳过（不是错误，也不能刷日志）。
+func TestGrowthTasksUnsupportedChannelSkips(t *testing.T) {
+	// plainUpstream 只暴露 provider.Upstream 的方法集 → 不实现 growthTasksRunner。
+	s := newGrowthScheduler(plainUpstream{}, Config{GrowthTasks: true})
+
+	s.RunGrowthTasksNow() // 不应 panic，也不应有副作用
+}
+
+// 面板保存开关后必须**热生效**（不重启）——
+// 若只写配置文件不推送，用户会觉得「开了开关却没生效」。
+func TestGrowthOptionsHotUpdate(t *testing.T) {
+	stub := &growthTasksStub{}
+	s := newGrowthScheduler(stub, Config{}) // 构造时全关
+
+	if s.growthOptions().tasks {
+		t.Fatal("构造时应为关闭")
+	}
+	s.RunGrowthTasksNow()
+	if stub.taskCalls != 0 {
+		t.Fatal("热更新前不应执行")
+	}
+
+	// 模拟面板保存：开启任务 + 兑换
+	s.SetGrowthOptions(true, true, 3, true, true)
+	o := s.growthOptions()
+	if !o.tasks || !o.redeemStreak || o.travelLocation != 3 || !o.tasksMP {
+		t.Fatalf("热更新未生效：%+v", o)
+	}
+
+	s.RunGrowthTasksNow()
+	if stub.taskCalls != 1 {
+		t.Fatalf("热更新后应执行 1 次，得到 %d", stub.taskCalls)
+	}
+
+	// 再关闭：必须立刻停止
+	s.SetGrowthOptions(false, false, 0, false, false)
+	s.RunGrowthTasksNow()
+	if stub.taskCalls != 1 {
+		t.Fatalf("关闭后不应再执行，累计 %d 次", stub.taskCalls)
+	}
+}
+
+// 旅行目的地越界收敛：0 与 >4 一律取 1。
+func TestGrowthTravelLocationClamp(t *testing.T) {
+	stub := &growthStub{}
+	for _, in := range []int{0, -3, 5, 99} {
+		s := newGrowthScheduler(stub, Config{GrowthTravel: true, GrowthTravelLocation: in})
+		if got := s.travelLocationID(); got != 1 {
+			t.Fatalf("目的地 %d 应收敛为 1，得到 %d", in, got)
+		}
+	}
+	s := newGrowthScheduler(stub, Config{GrowthTravel: true, GrowthTravelLocation: 4})
+	if got := s.travelLocationID(); got != 4 {
+		t.Fatalf("合法目的地 4 被改写为 %d", got)
+	}
+}
+
+// 成长任务与兑换/旅行各自独立开关：只开任务不得触发兑换与旅行。
+func TestGrowthTasksIndependentOfRedeemTravel(t *testing.T) {
+	stub := &growthStub{}
+	s := newGrowthScheduler(stub, Config{GrowthTasks: true})
+
+	s.RunGrowthNow() // 只有任务开（growthStub 不实现任务入口）
+
+	if stub.redeemCalls != 0 || stub.travelCalls != 0 {
+		t.Fatalf("只开任务开关却触发了兑换/旅行：%d/%d", stub.redeemCalls, stub.travelCalls)
+	}
+}
+
+// 渠道不支持错误应被识别（调度器据此中止整轮，避免逐账号空跑）。
+func TestIsGrowthUnsupportedErr(t *testing.T) {
+	if !IsGrowthUnsupportedErr(errString("http 404: not found")) {
+		t.Fatal("404 应判为不支持")
+	}
+	if !IsGrowthUnsupportedErr(errString("the api is unsupported")) {
+		t.Fatal("unsupported 应判为不支持")
+	}
+	if IsGrowthUnsupportedErr(errString("http 500: internal error")) {
+		t.Fatal("5xx 是瞬时错误，不应判为不支持（否则会整轮中止）")
+	}
+	if IsGrowthUnsupportedErr(nil) {
+		t.Fatal("nil 不应判为不支持")
+	}
+}
+
+type errString string
+
+func (e errString) Error() string { return string(e) }

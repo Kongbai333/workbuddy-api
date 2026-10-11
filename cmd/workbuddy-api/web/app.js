@@ -484,9 +484,15 @@ function renderAccounts() {
     // 匿名渠道（无积分/无签到）：只保留「不可操作」的静态指示，
     // 不给刷新积分/停用/删除入口——后端也会硬拒，避免用户白点一次。
     const noCredits = NO_CREDITS.has(a.group);
+    // 成长任务入口：仅成长中心支持的渠道显示（目前只有 WorkBuddy 国内版）。
+    // 用后端下发的 a.growth 判定，不在前端硬编码渠道名。
+    const taskBtn = a.growth
+      ? `<span class="icon-op" title="执行成长任务（会真实改变账号状态）" onclick="runTasks('${a.uid}')">★</span>`
+      : "";
     const ops = noCredits
       ? `<span class="icon-op off" title="固定账号，不可停用/删除" onclick="return false">🔒</span>`
       : `${checkinBtn}
+          ${taskBtn}
           <span class="icon-op" title="刷新积分" onclick="refreshOne('${a.uid}')">↻</span>
           <span class="icon-op warn" title="${disableTitle}" onclick="toggleDisable('${a.uid}',${a.disabled})">${disableIcon}</span>
           <span class="icon-op danger" title="删除账号" onclick="removeAcct('${a.uid}')">✕</span>`;
@@ -821,6 +827,129 @@ async function refreshAll() {
   }
 }
 
+// ---------- 成长任务「一键完成」 ----------
+//
+// 为什么做成「异步 + 轮询」而不是等一个长请求：
+// 单账号要发几十个请求（含真实对话、专家召唤链），多账号可到数分钟，
+// 同步 fetch 会被超时掐断，用户看到的是「点了没反应」。
+let taskPollTimer = null;
+
+// 任务状态图标与配色类（与 style.css 的 .tk-* 对应）。
+const TASK_STATUS_META = {
+  claimed:     { ico: "✓", cls: "tk-claimed", text: "已领奖" },
+  done:        { ico: "•", cls: "tk-done",    text: "已完成" },
+  error:       { ico: "✗", cls: "tk-error",   text: "失败" },
+  unsupported: { ico: "–", cls: "tk-manual",  text: "渠道不支持" },
+  manual:      { ico: "·", cls: "tk-manual",  text: "需手动" },
+  skipped:     { ico: "–", cls: "tk-skipped", text: "跳过" },
+};
+
+// runTasks 触发「一键完成」。uid 为空 = 全部 WorkBuddy 账号。
+//
+// 必须二次确认：这些动作会**真实改变账号状态**（点亮进度并领奖），
+// 且事件形状来自第三方逆向成果，本项目未独立实测。
+async function runTasks(uid) {
+  const who = uid ? "该账号" : "全部支持成长中心的账号";
+  const msg =
+    `即将对${who}执行成长任务「一键完成」。\n\n` +
+    "⚠️ 这会真实改变账号状态：点亮任务进度、领取奖励（不可撤销）。\n" +
+    "动作靠模拟客户端行为实现，首次建议只对一个账号执行，核对哪些任务真的点亮后再全量跑。\n\n" +
+    "耗时可能数十秒到数分钟（有真实对话与请求间隔），期间可在账号列表上方查看进度。\n\n" +
+    "确定继续？";
+  if (!confirm(msg)) return;
+  try {
+    await api("/api/account/tasks", { uid: uid || "", include_mp: false });
+    toast("任务已开始执行，进度显示在账号列表上方");
+    startTaskPolling();
+  } catch (e) { toast(e.message); }
+}
+
+// startTaskPolling 轮询任务进度；进行中每 2.5s 刷一次。
+function startTaskPolling() {
+  if (taskPollTimer) return;
+  const tick = async () => {
+    try {
+      const v = await api("/api/account/tasks_status");
+      renderTaskPanel(v);
+      if (v.running) {
+        taskPollTimer = setTimeout(tick, 2500);
+      } else {
+        taskPollTimer = null;
+        loadState(); // 领到奖后刷新账号积分数值
+      }
+    } catch (e) {
+      taskPollTimer = null;
+      toast("任务状态查询失败：" + e.message);
+    }
+  };
+  tick();
+}
+
+// renderTaskPanel 渲染任务执行面板（进度或结果）。
+function renderTaskPanel(v) {
+  const box = $("taskPanel");
+  if (!v || (!v.running && !(v.reports || []).length && !v.err)) {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    return;
+  }
+  box.classList.remove("hidden");
+
+  let head = "";
+  if (v.running) {
+    const cur = v.current ? ` · ${esc(v.current)}` : "";
+    head = `<span class="tk-title">成长任务执行中</span>
+      <span class="tk-run">${v.accounts_done}/${v.accounts_total} 个账号${cur}</span>
+      <span class="tk-spacer"></span>
+      <span class="tk-sum">已完成项会实时显示</span>`;
+  } else {
+    const bad = (v.reports || []).some((r) => r.err);
+    head = `<span class="tk-title">成长任务结果</span>
+      <span class="${bad ? "tk-err" : "tk-ok"}">到账 +${v.credit} 分 +${v.energy} 能</span>
+      <span class="tk-spacer"></span>
+      <span class="tk-sum">${esc(v.finished_at || "")}</span>
+      <button class="btn small" id="btnTaskClose">关闭</button>`;
+  }
+
+  const accounts = (v.reports || []).map((r) => {
+    const name = r.nickname ? `${esc(r.nickname)}` : "";
+    const uid8 = (r.uid || "").slice(0, 8);
+    const sum = r.err
+      ? `<span class="tk-err">${esc(r.err)}</span>`
+      : `<span class="tk-sum">${esc(r.msg || "")}</span>`;
+    const items = (r.tasks || []).map(taskRow).join("");
+    const manual = (r.manual || []).length
+      ? `<div class="task-manual">需在客户端手动完成：${(r.manual || []).map(esc).join("、")}</div>`
+      : "";
+    return `<div class="task-acct">
+      <div class="task-acct-head">${name}<span class="tk-code">${esc(uid8)}</span>${sum}</div>
+      <div class="task-list">${items}</div>
+      ${manual}
+    </div>`;
+  }).join("");
+
+  box.innerHTML = `<div class="task-panel-head">${head}</div>${accounts}`;
+  const closeBtn = $("btnTaskClose");
+  if (closeBtn) closeBtn.onclick = () => { $("taskPanel").classList.add("hidden"); };
+}
+
+// taskRow 渲染单条任务结果。
+function taskRow(t) {
+  const meta = TASK_STATUS_META[t.status] || { ico: "·", cls: "", text: t.status };
+  const prog = t.after || t.before
+    ? `<span class="tk-code">${esc(t.before || "")}${t.after ? " → " + esc(t.after) : ""}</span>`
+    : "";
+  const reward = (t.credit || t.energy)
+    ? `<span class="tk-reward">+${t.credit || 0}分 +${t.energy || 0}能</span>` : "";
+  const title = t.title ? `（${esc(t.title)}）` : "";
+  return `<div class="task-item ${meta.cls}">
+    <span class="tk-ico" title="${esc(meta.text)}">${meta.ico}</span>
+    <span class="tk-code" title="${esc(t.task_code)}">${esc(t.task_code)}</span>
+    <span class="tk-msg">${esc(t.msg || "")}${title} ${prog}</span>
+    <span class="tk-reward">${reward}</span>
+  </div>`;
+}
+
 // ---------- 登录 ----------
 let pendingChannel = null;
 // 待执行动作："login" = 打开浏览器登录，"import" = 从本机客户端导入。
@@ -1146,6 +1275,13 @@ function openSettings() {
   // 自动签到 + 开机自启 + 临期阈值
   $("chkAutostart").checked = !!state.autostart;
   $("selExpiring").value = String(state.expiring_days || 1);
+  // 成长中心自动化开关（默认全关）
+  const g = state.growth || {};
+  $("chkGrowthRedeem").checked = !!g.redeem_streak;
+  $("chkGrowthTravel").checked = !!g.travel;
+  $("selTravelLoc").value = String(g.travel_location || 1);
+  $("chkGrowthTasks").checked = !!g.tasks;
+  $("chkGrowthTasksMP").checked = !!g.tasks_include_mp;
   syncListenRisk(); // 按当前监听地址初始化警告条与必填星号
   $("settingsOverlay").classList.remove("hidden");
 }
@@ -1221,12 +1357,24 @@ async function saveSettings() {
     } catch (e) { toast(e.message); return; }
   }
 
-  // 5) API-Key（最后保存：改 Key 可能影响当前会话的后续请求）
+  // 5) 成长中心自动化开关（四项，默认全关；保存后热生效，无需重启）
+  const growthBody = {
+    redeem_streak: $("chkGrowthRedeem").checked,
+    travel: $("chkGrowthTravel").checked,
+    travel_location: parseInt($("selTravelLoc").value, 10) || 1,
+    tasks: $("chkGrowthTasks").checked,
+    tasks_include_mp: $("chkGrowthTasksMP").checked,
+  };
+  try {
+    await api("/api/config/growth", growthBody);
+  } catch (e) { toast(e.message); return; }
+
+  // 6) API-Key（最后保存：改 Key 可能影响当前会话的后续请求）
   try {
     await api("/api/config/api_key", { key: $("keyInput").value.trim() });
   } catch (e) { toast(e.message); return; }
 
-  // 6) 密码已在第 1 步生效（会话已换新），无需再强制重登
+  // 7) 密码已在第 1 步生效（会话已换新），无需再强制重登
   toast(adminPass ? "设置已保存，管理密码已生效" : "设置已保存");
   closeSettings();
   loadState();
@@ -1394,6 +1542,7 @@ function bind() {
   $("btnGLMToggleManual").onclick = () => $("glmManual").classList.toggle("hidden");
   $("btnCheckinAll").onclick = checkinAll;
   $("btnRefreshAll").onclick = refreshAll;
+  $("btnTasksAll").onclick = () => runTasks("");
   $("btnAddTime").onclick = addTime;
   $("btnCopyUrl").onclick = copyUrl;
   $("btnCancelLogin").onclick = cancelLogin;
@@ -1415,6 +1564,14 @@ function bind() {
   };
   // 顶栏齿轮进入统一设置（点击地址/Key 文本仍为复制）
   $("btnSettings").onclick = openSettings;
+
+  // 成长任务：无支持渠道时禁用入口（成长中心目前仅 WorkBuddy 国内版提供）。
+  // 并探测是否有上一轮仍在执行（例如刷新页面后），有则续上轮询。
+  if (!state.growth_supported) {
+    $("btnTasksAll").disabled = true;
+    $("btnTasksAll").title = "当前没有支持成长中心的渠道（仅 WorkBuddy 国内版提供）";
+  }
+  startTaskPolling();
 
   // 统一设置弹层
   $("btnSettingsSave").onclick = saveSettings;
