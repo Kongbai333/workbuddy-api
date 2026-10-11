@@ -671,7 +671,9 @@ function renderFees(fees) {
 
   html += `<div class="fees-tabs">`;
   for (const ch of channels) {
-    const n = (ch.models || []).length;
+    // 计数与表格口径保持一致：只算上游提供了倍率的模型。
+    // 若这里仍计总数，用户会看到 tab 上的数字与表格行数对不上。
+    const n = (ch.models || []).filter((m) => m && m.priced).length;
     const on = ch.channel === active ? " active" : "";
     // 渠道积分余额角标：取自 state.accounts（与积分汇总条同源），
     // 让用户在选择渠道时即可看到「这个渠道还有多少积分可用」。
@@ -685,7 +687,14 @@ function renderFees(fees) {
 
   for (const ch of channels) {
     const chCls = chClass(ch.channel);
-    const models = ch.models || [];
+    const all = ch.models || [];
+    // 本表的用途是「比价」：没有倍率的模型（unknown）在这里没有信息量，
+    // 且多为上游的内部/子代理模型（browser_use_subagent、computer_use_subagent 等，
+    // 它们本就不按 token 计费，所以费率接口不返回）。
+    // 因此只渲染有倍率的行，隐藏数量在表下注明 —— 避免用户以为模型清单缺了东西：
+    // 接口与客户端看到的始终是完整清单（/v1/models 不受影响）。
+    const models = all.filter((m) => m && m.priced);
+    const unpriced = all.length - models.length;
     const hidden = ch.channel !== active ? ' class="hidden"' : '';
     html += `<div class="fees-panel${hidden ? ' hidden' : ''}" data-feepanel="${esc(ch.channel)}">`;
     html += `<table><thead><tr><th>模型</th><th>倍率</th><th>模型</th><th>倍率</th></tr></thead><tbody>`;
@@ -694,7 +703,11 @@ function renderFees(fees) {
       const m2 = models[i + 1];
       html += `<tr><td>${modelIdCell(m1, ch.channel)}</td><td>${rateCell(m1)}</td><td>${modelIdCell(m2, ch.channel)}</td><td>${rateCell(m2)}</td></tr>`;
     }
-    html += `</tbody></table></div>`;
+    html += `</tbody></table>`;
+    if (unpriced > 0) {
+      html += `<div class="note" style="margin-top:6px">本渠道另有 ${unpriced} 个模型上游未提供倍率（多为内部/子代理模型），已从本表隐藏；接口与客户端不受影响，仍可正常调用。</div>`;
+    }
+    html += `</div>`;
   }
 
   html += `<div class="note" style="margin-top:8px">${esc(fees.disclaimer || "")}</div>`;
