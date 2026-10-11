@@ -334,7 +334,17 @@ func main() {
 		log.Printf("ledger init failed（统计功能不可用）: %v", lgerr)
 	}
 
-	wbSch := scheduler.New(scheduler.Config{Pool: wbPool, Upstream: wbUp, Name: "workbuddy", CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg})
+	// 成长中心自动化**只接 workbuddy**：成长接口仅 WorkBuddy 国内版提供，
+	// 其它渠道调用会得到 404/不支持（调度器侧有可选接口探测 + 静默跳过兜底）。
+	// 开关默认关闭，见 config.schedule 的 growth_* 项。
+	wbSch := scheduler.New(scheduler.Config{
+		Pool: wbPool, Upstream: wbUp, Name: "workbuddy",
+		CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours,
+		ExpiringThreshold: expiringThreshold, Ledger: lg,
+		GrowthRedeemStreak:   cfg.Schedule.GrowthRedeemStreak,
+		GrowthTravel:         cfg.Schedule.GrowthTravel,
+		GrowthTravelLocation: cfg.Schedule.GrowthTravelLocation,
+	})
 	trSch := scheduler.New(scheduler.Config{Pool: trPool, Upstream: trUp, Name: "traework", CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg})
 	// Qoder 无签到活动：调度器只做 token keepalive（每日 refresh 保活）。
 	// CheckinMinutes 用显式空切片关闭（传 nil 会被 scheduler.New 补成默认 9:00/21:00）。

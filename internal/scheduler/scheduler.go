@@ -51,6 +51,20 @@ type Config struct {
 
 	// Ledger 积分流水记账器（非 nil 时签到后余额刷新触发差分记账）。
 	Ledger *ledger.Ledger
+
+	// ---- 成长中心自动化（默认全关）----
+	//
+	// ⚠️ 这两项会**真实改变账号状态**（兑换档位、消耗抽奖次数、派出旅行），
+	// 与签到这类幂等动作不同 —— 抽奖次数用掉不可撤销。
+	// 因此默认关闭，必须由用户在 config.schedule 中显式开启。
+	// 详见 internal/scheduler/growth.go 与 docs/任务体系协议.md。
+
+	// GrowthRedeemStreak 连登档位自动兑换 + 抽奖次数自动抽完。
+	GrowthRedeemStreak bool
+	// GrowthTravel 猫猫旅行自动派出 + 到站自动领取。
+	GrowthTravel bool
+	// GrowthTravelLocation 旅行目的地（1~4）；0 或越界一律取 1。
+	GrowthTravelLocation int
 }
 
 // Scheduler 调度器。
@@ -68,6 +82,11 @@ type Scheduler struct {
 	// 用「日+时段」而非「日」作键：本工具允许一天多个签到时间（如 09:00/21:00），
 	// 若只按日标记，早间签到成功会连带吞掉晚间时段。
 	checkinDone map[string]bool
+
+	// growthDoneDay 成长自动化当日已执行标记（"YYYY-MM-DD"）。
+	// 与 checkinDone 同为 retryMu 保护；置位与检查必须原子 ——
+	// 否则并发的两次触发会同时通过检查，导致重复兑换/重复抽奖。
+	growthDoneDay string
 }
 
 // New 构建。
@@ -281,6 +300,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 					s.runCheckin(start)
 				} else if start, ok := exactSlot(ch, minute); ok {
 					s.runCheckin(start)
+					// 命中配置时刻（非窗口重试）时跟随执行成长自动化。
+					// 只认起点时刻：窗口内每分钟都跑会重复触发。
+					s.runGrowthOncePerDay(now)
 				} else {
 					s.RunCheckinNow()
 				}

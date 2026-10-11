@@ -104,11 +104,11 @@ func ParseListen(s string) (Listen, error) {
 // Config 顶层配置。
 type Config struct {
 	Listen    Listen `json:"listen"`
-	APIKey    string `json:"api_key"`    // 空 = 不鉴权
+	APIKey    string `json:"api_key"`        // 空 = 不鉴权
 	AdminPass string `json:"admin_password"` // 空 = 管理面板不鉴权（仅允许监听环回地址时为空）
-	AuthDir   string `json:"auth_dir"`   // ./auths
-	StateFile string `json:"state_file"` // ./data/state.json
-	Region    string `json:"region"`     // 只收 "cn"
+	AuthDir   string `json:"auth_dir"`       // ./auths
+	StateFile string `json:"state_file"`     // ./data/state.json
+	Region    string `json:"region"`         // 只收 "cn"
 
 	Cooldown struct {
 		HardCredit  string `json:"hard_credit"`   // "12h"
@@ -124,6 +124,26 @@ type Config struct {
 		// ExpiringThresholdHours 临期阈值（小时）：到期日在此范围内的积分视为「临期」,
 		// Pick() 临期优先消耗。默认 24，下限 24（低于 24 会被钳到 24）。
 		ExpiringThresholdHours int `json:"expiring_threshold_hours,omitempty"`
+
+		// ---- 成长中心自动化 ----
+		//
+		// ⚠️ 这两项**默认全部关闭**，且必须由用户显式开启。
+		//
+		// 原因：它们会**真实改变账号状态**（兑换档位、消耗抽奖次数、派出旅行），
+		// 与签到这类幂等动作不同 —— 抽奖次数一旦用掉不可撤销。默认开启会在用户
+		// 不知情的情况下消耗其账号资源。
+		//
+		// 建议先用手动接口观察一两次结果（见 docs/任务体系协议.md），确认符合预期再开。
+
+		// GrowthRedeemStreak 连登档位自动兑换 + 抽奖次数自动抽完。
+		// 兑换按 streak 档位状态自动跳过未解锁项（未解锁返回 403，属预期）。
+		GrowthRedeemStreak bool `json:"growth_redeem_streak,omitempty"`
+		// GrowthTravel 猫猫旅行自动派出 + 到站自动领取。
+		// 每自然日仅派一次（上游 daily_limit_reached 控制），重复调用无副作用。
+		GrowthTravel bool `json:"growth_travel,omitempty"`
+
+		// GrowthTravelLocation 旅行目的地（1~4，实测收益/时长区间相同）。0 视为 1。
+		GrowthTravelLocation int `json:"growth_travel_location,omitempty"`
 	} `json:"schedule"`
 
 	Upstream struct {
