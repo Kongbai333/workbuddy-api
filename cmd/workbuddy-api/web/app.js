@@ -1135,10 +1135,8 @@ function openSettings() {
   $("mapEditor").classList.add("hidden");
   $("mapErr").textContent = "";
   renderMapPresets(channels);
-  // 渠道代理 + oczen 自定义 key
+  // 渠道代理（oczen 已停用，相关 key 输入已移除）
   renderProxyList();
-  $("oczenKeyInput").value = state.oczen_api_key || ""; // 回显脱敏值；未改动则原样回传，后端按脱敏值识别为「未变」
-  $("oczenKeyInput").dataset.touched = "";
   // 自动签到 + 开机自启 + 临期阈值
   $("chkAutostart").checked = !!state.autostart;
   $("selExpiring").value = String(state.expiring_days || 1);
@@ -1168,33 +1166,7 @@ function validateProxies() {
   return [proxies, ""];
 }
 
-// testOczenKey 「测试」按钮：用输入框当前的候选 key（含脱敏值/空）调后端实测。
-// 后端逻辑：候选 key 临时写入渠道 client → big-pickle 发最小对话 → 200/429 均算通过
-// （200 = 配额正常；429 = 连通但匿名共享配额限流，属预期现象）；测试后恢复配置原值。
-async function testOczenKey() {
-  const btn = $("btnOczenTest");
-  if (btn.disabled) return;
-  btn.disabled = true;
-  const old = btn.textContent;
-  btn.textContent = "测试中…";
-  $("proxyErr").textContent = "";
-  try {
-    let k = $("oczenKeyInput").value.trim();
-    if (k.includes("…")) k = ""; // 脱敏形态 = 未改动，用当前配置值测
-    const r = await api("/api/config/oczen_test", { api_key: k });
-    if (r.ok) {
-      toast(r.status === 200 ? "✓ OpenCodeZen 凭证可用（200）" : "✓ 连通正常（429 匿名限流，属预期）");
-    } else {
-      const brief = (r.body || r.error || "").slice(0, 90).replace(/\s+/g, " ");
-      toast(`✗ 测试失败 HTTP ${r.status}：${brief}`);
-    }
-  } catch (e) {
-    toast("✗ 测试失败：" + e.message);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = old;
-  }
-}
+// （原 testOczenKey 已随 oczen 渠道停用移除：面板不再有该渠道与对应 Key 输入框）
 
 async function saveSettings() {
   // 1) 监听地址 + 管理密码（同请求提交：后端先存密码再切监听）
@@ -1216,17 +1188,10 @@ async function saveSettings() {
     } catch (e) { toast(e.message); closeSettings(); showLogin("管理密码已变更，请重新登录"); return; }
   }
 
-  // 2) 代理（先本地校验，失败阻断保存）+ oczen key（仅在用户改动过时提交，避免把脱敏回显值存回）
+  // 2) 代理（先本地校验，失败阻断保存）
   const [proxies, perr] = validateProxies();
   if (perr) { $("proxyErr").textContent = perr; toast(perr); return; }
   const body = { proxies };
-  const kIn = $("oczenKeyInput");
-  if (kIn.dataset.touched === "1") {
-    let k = kIn.value.trim();
-    // 值仍是脱敏形态（含 …）则视为未修改，保持服务端现值
-    if (k && k.includes("…")) k = undefined;
-    if (k !== undefined) body.oczen_api_key = k; // undefined 时不携带字段 = 不改动；空串 = 清除回匿名
-  }
   try {
     await api("/api/config/proxies", body);
   } catch (e) { toast(e.message); return; }
@@ -1465,9 +1430,6 @@ function bind() {
   $("btnRenameSave").onclick = saveRename;
   $("btnRenameCancel").onclick = closeRename;
   $("rnInput").addEventListener("keydown", (e) => { if (e.key === "Enter") saveRename(); });
-  // oczen key 用户改动标记：避免把脱敏回显值误存回
-  $("oczenKeyInput").addEventListener("input", (e) => { e.target.dataset.touched = "1"; });
-  $("btnOczenTest").onclick = testOczenKey;
 
   // 点击弹层空白处关闭
   $("settingsOverlay").onclick = (e) => { if (e.target === $("settingsOverlay")) closeSettings(); };

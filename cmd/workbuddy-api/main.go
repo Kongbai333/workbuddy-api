@@ -426,11 +426,17 @@ func main() {
 		// 故按正常多账号渠道处理：错误分类惩罚 + 池内轮换。
 		//
 		// 唯一真实约束是「refresh_token 轮换必须落盘」，已由 glm.RefreshToken 保证。
-		// oczen：整池只有一个匿名虚拟账号且不可重登——任何账号级惩罚（冷却/计数/禁用）
-		// 都等于整条渠道下线。SingleAccount 声明该约束，handler 对所有错误一律原文透传；
-		// NoCooldownOnServerError 保留（语义已被 SingleAccount 涵盖，留着不依赖顺序）。
-		provider.Oczen: {Kind: provider.Oczen, Pool: ocPool, Upstream: ocUp, StaticModels: oczen.StaticModels(),
-			SingleAccount: true, NoCooldownOnServerError: true},
+		// ── OpenCodeZen（oczen）渠道已按用户要求**停用** ────────────────────
+		//
+		// 不登记到 Runtime ⇒ 面板不显示该渠道、路由不接受 oczen/* 请求。
+		// 实现代码（internal/oczen）与配置字段（oczen_api_key）均保留，
+		// 需要恢复时把下面这行同时加回本 map 与 appRuntimes 即可：
+		//
+		//   provider.Oczen: {Kind: provider.Oczen, Pool: ocPool, Upstream: ocUp,
+		//     StaticModels: oczen.StaticModels(), SingleAccount: true, NoCooldownOnServerError: true},
+		//
+		// 停用原因：该渠道只会反代上游的免费模型，而免费档不受零留存政策保护
+		// （数据可能被用于改进模型）—— 具体见 docker/README 与项目记忆。
 	}
 	appRuntimes := map[provider.Kind]*app.Runtime{
 		provider.WorkBuddy:   {Kind: provider.WorkBuddy, Pool: wbPool, Upstream: wbUp, Scheduler: wbSch},
@@ -445,7 +451,7 @@ func main() {
 		provider.Raccoon:     {Kind: provider.Raccoon, Pool: rcPool, Upstream: rcUp, Scheduler: rcSch},
 		provider.Loomy:       {Kind: provider.Loomy, Pool: lmPool, Upstream: lmUp, Scheduler: lmSch},
 		provider.GLM:         {Kind: provider.GLM, Pool: glmPool, Upstream: glmUp, Scheduler: glmSch},
-		provider.Oczen:       {Kind: provider.Oczen, Pool: ocPool, Upstream: ocUp, Scheduler: ocSch},
+		// ── oczen 已停用：不登记（面板不显示该渠道）。恢复方法见上方 serverRuntimes 的注释。
 	}
 
 	appInst, err := app.New(app.Options{
