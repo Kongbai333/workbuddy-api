@@ -263,7 +263,7 @@ func (p *Pool) Cooldown(uid string, kind CoolKind, d time.Duration, reason strin
 }
 
 // ClearPenalty 清除账号的冷却与错误计数（不动 disabled，停用由用户控制）。
-// 用途：单账号渠道（oczen）在启动时自愈历史脏数据——旧版本会把唯一账号
+// 用途：单账号渠道在启动时自愈历史脏数据——旧版本会把唯一账号
 // 因网络抖动/429 冷却，而该渠道无号可轮换，冷却即等于整条渠道下线。
 func (p *Pool) ClearPenalty(uid string) {
 	p.mu.Lock()

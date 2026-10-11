@@ -31,7 +31,6 @@ import (
 	loginraccoon "workbuddy-api/internal/login_raccoon"
 	logintrae "workbuddy-api/internal/login_trae"
 	"workbuddy-api/internal/login_wbai"
-	"workbuddy-api/internal/oczen"
 	"workbuddy-api/internal/platform"
 	"workbuddy-api/internal/pool"
 	"workbuddy-api/internal/provider"
@@ -126,10 +125,6 @@ type App struct {
 	// proxySyncer 面板保存 proxies 后重新套各渠道 HTTP client（热更新代理）。
 	// 由 main.go 注入；nil 时仅写配置不热更。
 	proxySyncer func(proxies map[string]string)
-
-	// oczenSyncer 面板保存 oczen key 后写入渠道 client（热更新凭证）。
-	// 由 main.go 注入；nil 时仅写配置不热更。
-	oczenSyncer func(key string)
 
 	refreshMu  sync.Mutex // 防并发刷新积分
 	refreshing bool
@@ -267,9 +262,8 @@ func (a *App) runtime(kind provider.Kind) *Runtime {
 }
 
 func (a *App) firstRuntime() *Runtime {
-	// oczen 排在末位：它无调度器活动，不应成为「签到时间/下次签到」的展示来源。
-	// 顺序即展示优先级：新渠道追加在 Oczen 之前（Oczen 恒末位）。
-	for _, k := range []provider.Kind{provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork, provider.GLM, provider.MonkeyCode, provider.Raccoon, provider.Loomy, provider.Oczen} {
+	// 顺序即展示优先级（面板「签到时间/下次签到」取首个有调度器的渠道）。
+	for _, k := range []provider.Kind{provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork, provider.GLM, provider.MonkeyCode, provider.Raccoon, provider.Loomy} {
 		if rt := a.runtime(k); rt != nil {
 			return rt
 		}
@@ -302,16 +296,15 @@ func (a *App) allStatuses() []pool.Status {
 // channelOrder 渠道固定展示顺序（面板账号卡片/费率表/设置代理列表统一用此序）。
 // 旧 Qoder 已下线不列；未出现在表中的渠道排最后（按字母序）。
 var channelOrder = map[provider.Kind]int{
-	provider.Oczen: 0, provider.WorkBuddy: 1, provider.WorkBuddyAI: 2,
+	provider.WorkBuddy: 1, provider.WorkBuddyAI: 2,
 	provider.QoderCN: 3, provider.QoderCOM: 4, provider.TraeWork: 5, provider.QwenWork: 6,
 	provider.GLM: 7,
 }
 
 // feeChannelOrder 「模型列表和费率」面板的渠道分组顺序。
-// 与 channelOrder 分开维护：本表把 Oczen 放首位（其免费模型最常被查），
-// 且含 TraeCode（与 TraeWork 共账号但模型集不同，需独立成组）。
+// 与 channelOrder 分开维护：含 TraeCode（与 TraeWork 共账号但模型集不同，需独立成组）。
 var feeChannelOrder = []provider.Kind{
-	provider.Oczen, provider.WorkBuddy, provider.WorkBuddyAI, provider.QoderCN,
+	provider.WorkBuddy, provider.WorkBuddyAI, provider.QoderCN,
 	provider.QoderCOM, provider.TraeWork, provider.TraeCode, provider.QwenWork, provider.GLM,
 	provider.MonkeyCode,
 	provider.Raccoon,
@@ -340,9 +333,8 @@ func sortChannelsByOrder[T any](items []T, kindOf func(T) provider.Kind) {
 // MonkeyCode 一期也不提供手动签到：上游未提供额度或签到端点。
 // 小浣熊一期也不提供手动签到：上游未提供额度或签到端点。
 // Loomy 一期也不提供手动签到：上游未提供额度或签到端点。
-// OpenCodeZen 匿名通道无账号概念，既无签到也无积分。
 func noExplicitCheckin(k provider.Kind) bool {
-	return k == provider.WorkBuddyAI || k == provider.QwenWork || k == provider.MonkeyCode || k == provider.Raccoon || k == provider.Loomy || k == provider.Oczen
+	return k == provider.WorkBuddyAI || k == provider.QwenWork || k == provider.MonkeyCode || k == provider.Raccoon || k == provider.Loomy
 }
 
 func (a *App) findRuntimeAuth(uid string) (*Runtime, *auth.Auth) {
@@ -502,9 +494,6 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	case provider.Loomy:
 		// 导入型渠道：凭据来自本机已登录的官方客户端，上游没有可复现的 OAuth 流程。
 		return "", fmt.Errorf("%s 渠道无需登录：请在面板点「从本机客户端导入」（复用本机已登录的官方客户端凭据）", k)
-	case provider.Oczen:
-		// 匿名通道无账号可登（凭证固定为 public，启动时已注入虚拟账号）
-		return "", errors.New("OpenCodeZen 为匿名通道，无需也无法添加账号")
 	case provider.GLM:
 		// 智谱清言无编程式登录：凭据只能由用户从浏览器 Cookie 里取出后粘贴。
 		// 故这里不发起轮询流程，只返回登录页地址；用户粘贴后走 SubmitGLMToken。
@@ -1147,8 +1136,6 @@ func (a *App) peekLoginError() string {
 }
 
 // reloadAccounts 用 auths 目录最新文件对齐账号池。
-// 注意：oczen 不在此列——匿名虚拟账号没有凭证文件，
-// SyncToDir 会因「目录扫描不到」而把它从池里剔除，故只能由 main 装配时注入一次。
 func (a *App) reloadAccounts() {
 	if rt := a.runtime(provider.WorkBuddy); rt != nil && rt.Pool != nil {
 		auths, err := auth.LoadWorkBuddyDir(a.cfg.AuthDir, a.cfg.Region)
@@ -1468,10 +1455,6 @@ func (a *App) RefreshCredits(uid string) (int64, error) {
 	if rt == nil || au == nil {
 		return 0, fmt.Errorf("unknown account %s", uid)
 	}
-	if rt.Kind == provider.Oczen {
-		// 匿名通道无积分概念，面板显示「不适用」，无刷新语义。
-		return 0, fmt.Errorf("OpenCodeZen 匿名通道无积分，不适用")
-	}
 	log.Printf("credits refresh start platform=%s uid=%s", rt.Kind, uid)
 	usable, expiring, unusable, err := a.creditTotals(rt, au)
 	if err != nil {
@@ -1501,10 +1484,6 @@ func (a *App) RefreshAll() RefreshSummary {
 	for _, rt := range a.runtimes {
 		// 别名渠道复用同一 Pool：计入会重复刷新同一批账号。
 		if rt == nil || rt.Pool == nil || rt.Upstream == nil || rt.Alias {
-			continue
-		}
-		// oczen 无积分可刷：纳入只会产生一条无意义的「无积分」失败记录。
-		if rt.Kind == provider.Oczen {
 			continue
 		}
 		ps := PlatformSummary{Accounts: []AccountRefresh{}}
@@ -1561,14 +1540,10 @@ type AccountRefresh struct {
 }
 
 // RemoveAccount 删除账号（auth 文件 + 内存池）。
-// oczen 是唯一例外：匿名虚拟账号不可删除（需求约束），返回明确错误而非默默失败。
 func (a *App) RemoveAccount(uid string) error {
 	rt, au := a.findRuntimeAuth(uid)
 	if rt == nil || au == nil {
 		return fmt.Errorf("unknown account %s", uid)
-	}
-	if rt.Kind == provider.Oczen {
-		return fmt.Errorf("OpenCodeZen 匿名通道账号不可删除")
 	}
 	if au.FilePath != "" {
 		_ = os.Remove(au.FilePath)
@@ -1579,15 +1554,10 @@ func (a *App) RemoveAccount(uid string) error {
 }
 
 // DisableAccount 停用/启用账号。
-// oczen 匿名账号不可停用：停用后无法从面板恢复，而该渠道只有一个虚拟账号，
-// 停用等于禁用整个渠道。
 func (a *App) DisableAccount(uid string, disabled bool) error {
 	rt, _ := a.findRuntimeAuth(uid)
 	if rt == nil || rt.Pool == nil {
 		return fmt.Errorf("unknown account %s", uid)
-	}
-	if rt.Kind == provider.Oczen {
-		return fmt.Errorf("OpenCodeZen 匿名通道账号不可停用/启用")
 	}
 	rt.Pool.SetDisabled(uid, disabled)
 	if disabled {
@@ -1605,9 +1575,6 @@ func (a *App) ResourceDetail(uid string) (int64, []provider.ResourceItem, error)
 	rt, au := a.findRuntimeAuth(uid)
 	if rt == nil || au == nil || rt.Upstream == nil {
 		return 0, nil, fmt.Errorf("unknown account %s", uid)
-	}
-	if rt.Kind == provider.Oczen {
-		return 0, nil, fmt.Errorf("OpenCodeZen 匿名通道无积分，不适用")
 	}
 	remain, items, err := rt.Upstream.UserResourceDetail(au)
 	if err != nil && a.refreshIfSessionDead(rt, au, err) {
@@ -1793,32 +1760,6 @@ func (a *App) SetCompatSyncer(fn func(defaultChannel string, maxTokensCap int, m
 // SetProxySyncer 注入代理热更新回调（由 main.go 注入：重新套各渠道 HTTP client）。
 func (a *App) SetProxySyncer(fn func(proxies map[string]string)) { a.proxySyncer = fn }
 
-// SetOczenSyncer 注入 oczen key 热更新回调（由 main.go 注入：写入渠道 client）。
-func (a *App) SetOczenSyncer(fn func(key string)) { a.oczenSyncer = fn }
-
-// TestOczenKey 验证 OpenCodeZen 凭证可用性（设置面板「测试」按钮）。
-// apiKey 非空时先用该 key 临时写入渠道 client（测试后恢复原值），空则直接测当前生效凭证。
-// 判定：200/429 均 return ok（200=配额正常，429=连通但限流，对匿名 key 属正常现象）。
-func (a *App) TestOczenKey(apiKey string) (int, string, error) {
-	rt := a.runtime(provider.Oczen)
-	if rt == nil {
-		return 0, "", fmt.Errorf("oczen 渠道未启用")
-	}
-	c, ok := rt.Upstream.(*oczen.Client)
-	if !ok {
-		return 0, "", fmt.Errorf("oczen 渠道类型异常")
-	}
-	// 临时写入候选 key（含空串 = 测匿名）；结束后恢复配置值，保证面板「取消」不残留半生效状态
-	orig := a.cfg.OczenAPIKey
-	c.SetAPIKey(apiKey)
-	defer c.SetAPIKey(orig)
-	status, body, err := c.TestKey()
-	if err != nil {
-		return 0, body, fmt.Errorf("无法连接 OpenCodeZen（检查网络/代理）：%v", err)
-	}
-	return status, body, nil
-}
-
 // maskKey 脱敏 API key：保留前 5 后 4，中间以 … 代替；空串原样返回。
 func maskKey(key string) string {
 	if key == "" {
@@ -1833,8 +1774,7 @@ func maskKey(key string) string {
 
 // SetProxies 保存单渠道上游代理配置（空串 = 直连）并热更新。
 // key 为渠道 kind，value 为 http(s)://host:port 或 socks5://host:port。
-// 同时接收 oczenKey：设置 OpenCodeZen 自定义 API key（空 = 回匿名凭证）。
-func (a *App) SetProxies(proxies map[string]string, oczenKey string) error {
+func (a *App) SetProxies(proxies map[string]string) error {
 	clean := make(map[string]string, len(proxies))
 	for k, v := range proxies {
 		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
@@ -1857,9 +1797,6 @@ func (a *App) SetProxies(proxies map[string]string, oczenKey string) error {
 	}
 	a.mu.Lock()
 	a.cfg.Proxies = clean
-	if oczenKey != "\u0000unset\u0000" { // 哨兵：请求未携带该字段时不改动现有 key
-		a.cfg.OczenAPIKey = strings.TrimSpace(oczenKey)
-	}
 	err := config.Save(a.cfg, a.cfgPath)
 	a.mu.Unlock()
 	if err != nil {
@@ -1867,9 +1804,6 @@ func (a *App) SetProxies(proxies map[string]string, oczenKey string) error {
 	}
 	if a.proxySyncer != nil {
 		a.proxySyncer(clean)
-	}
-	if a.oczenSyncer != nil {
-		a.oczenSyncer(a.cfg.OczenAPIKey)
 	}
 	if len(clean) == 0 {
 		log.Printf("上游代理已清空（全部直连）")
@@ -1896,9 +1830,6 @@ func (a *App) SetAccountNickname(uid, nickname string) error {
 	rt, au := a.findRuntimeAuth(uid)
 	if rt == nil || au == nil {
 		return fmt.Errorf("unknown account %s", uid)
-	}
-	if rt.Kind == provider.Oczen {
-		return fmt.Errorf("OpenCodeZen 匿名通道账号不可改名")
 	}
 	if au.FilePath == "" {
 		return fmt.Errorf("账号 %s 无凭证文件，不可改名", uid)
@@ -1941,11 +1872,11 @@ type AccountView struct {
 	CreditsStale bool `json:"credits_stale,omitempty"`
 	// CreditsNA 积分概念不适用（如 OpenCodeZen 匿名通道），UI 显示「不适用」
 	// 而非 0，并隐藏刷新积分与明细入口。
-	CreditsNA      bool              `json:"credits_na,omitempty"`
-	Cooling        bool              `json:"cooling"`
-	Until          string            `json:"until"`
-	Reason         string            `json:"reason"`
-	Disabled       bool              `json:"disabled"`
+	CreditsNA bool   `json:"credits_na,omitempty"`
+	Cooling   bool   `json:"cooling"`
+	Until     string `json:"until"`
+	Reason    string `json:"reason"`
+	Disabled  bool   `json:"disabled"`
 	// ModelCooling 模型级冷却（model → 解冻时刻）；仅该账号该模型限流，账号整体仍可用
 	// （429/6004 上游按模型计）。面板据此区分「整号冷却」与「个别模型限流」。
 	ModelCooling   map[string]string `json:"model_cooling,omitempty"`
@@ -1995,9 +1926,6 @@ type State struct {
 
 	// Proxies 单渠道上游代理（只读，保存走 POST /api/config/proxies）。
 	Proxies map[string]string `json:"proxies"`
-
-	// OczenAPIKey OpenCodeZen 自定义 API key（只读脱敏回显：sk-xxx…尾4位；保存走同端点）。
-	OczenAPIKey string `json:"oczen_api_key"`
 }
 
 // GetState 返回面板初始数据。
@@ -2044,8 +1972,6 @@ func (a *App) GetState() State {
 	for k, v := range a.cfg.Proxies {
 		st.Proxies[k] = v
 	}
-	// oczen key 脱敏回显：仅露首 5 + 尾 4（空则原样空串）
-	st.OczenAPIKey = maskKey(a.cfg.OczenAPIKey)
 	st.Accounts = a.accountViews()
 	return st
 }
@@ -2063,17 +1989,15 @@ func (a *App) accountViews() []AccountView {
 			ExpiringCredits: s.ExpiringCredits,
 			UnusableCredits: s.UnusableCredits,
 			CreditsStale:    s.CreditsStale,
-			// 匿名渠道无积分：前端据此显示「不适用」
-			CreditsNA:      group == provider.Oczen.String(),
-			Cooling:        s.Cooling,
-			Until:          fmtTime(s.Until),
-			Reason:         s.Reason,
-			Disabled:       s.Disabled,
-			ModelCooling:   fmtTimeMap(s.ModelCooling),
-			ErrCount:       s.ErrCount,
-			LastCheckinOK:  s.LastCheckinOK,
-			LastCheckinAt:  fmtTime(s.LastCheckinAt),
-			LastCheckinMsg: s.LastCheckinMsg,
+			Cooling:         s.Cooling,
+			Until:           fmtTime(s.Until),
+			Reason:          s.Reason,
+			Disabled:        s.Disabled,
+			ModelCooling:    fmtTimeMap(s.ModelCooling),
+			ErrCount:        s.ErrCount,
+			LastCheckinOK:   s.LastCheckinOK,
+			LastCheckinAt:   fmtTime(s.LastCheckinAt),
+			LastCheckinMsg:  s.LastCheckinMsg,
 		})
 	}
 	// 面板固定渠道序展示：OpenCodeZen → WorkBuddyCN → WorkBuddyAI → QoderCN → QoderCOM → TraeWork → 千问办公
@@ -2432,31 +2356,14 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("POST /api/config/proxies", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Proxies     map[string]string `json:"proxies"`
-			OczenAPIKey *string           `json:"oczen_api_key"` // 指针：区分「未携带」与「显式清空」
+			Proxies map[string]string `json:"proxies"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		key := "\u0000unset\u0000"
-		if req.OczenAPIKey != nil {
-			key = *req.OczenAPIKey
-		}
-		if err := a.SetProxies(req.Proxies, key); err != nil {
+		if err := a.SetProxies(req.Proxies); err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-	})
-	mux.HandleFunc("POST /api/config/oczen_test", func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			APIKey string `json:"api_key"` // 空 = 用当前生效凭证（配置中的 key 或匿名）
-		}
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		status, body, err := a.TestOczenKey(req.APIKey)
-		if err != nil {
-			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "status": 0, "error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": status == 200 || status == 429, "status": status, "body": body})
 	})
 	mux.HandleFunc("POST /api/account/nickname", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

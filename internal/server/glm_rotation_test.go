@@ -19,7 +19,7 @@ import (
 // 背景：GLM 曾误置 SingleAccount=true，导致账号 A 失效时不切账号 B
 // （多账号完全失效）。修掉后必须证明：
 //   - 非单账号渠道：账号 A 返回 401 → 自动切到账号 B 并成功
-//   - 单账号渠道：保持原文透传、不切号（oczen 语义不变）
+//   - 单账号渠道：保持原文透传、不切号（SingleAccount 语义不变）
 
 // rotatingUpstream 记录被调用的账号，并按 uid 决定行为。
 type rotatingUpstream struct {
@@ -46,8 +46,10 @@ func (u *rotatingUpstream) ChatStream(a *auth.Auth, _ []byte) (io.ReadCloser, in
 func (u *rotatingUpstream) FetchModels(*auth.Auth) ([]provider.ModelInfo, error) {
 	return []provider.ModelInfo{{ID: "m"}}, nil
 }
-func (u *rotatingUpstream) FetchModelPricing(*auth.Auth) ([]provider.ModelPricing, error) { return nil, nil }
-func (u *rotatingUpstream) UserResource(*auth.Auth) (int64, error)                        { return 0, nil }
+func (u *rotatingUpstream) FetchModelPricing(*auth.Auth) ([]provider.ModelPricing, error) {
+	return nil, nil
+}
+func (u *rotatingUpstream) UserResource(*auth.Auth) (int64, error) { return 0, nil }
 func (u *rotatingUpstream) UserResourceDetail(*auth.Auth) (int64, []provider.ResourceItem, error) {
 	return 0, nil, nil
 }
@@ -150,19 +152,19 @@ func TestMultiAccountRotatesOnAccountErrorInSameRequest(t *testing.T) {
 	t.Logf("✅ 真实语义确认：请求1 用 A 失败→请求内换到 B 成功（客户端 200）且 A 被禁用；请求2 直接用 B。调用序列 %v", calls)
 }
 
-// TestSingleAccountDoesNotRotate 单账号渠道（oczen 语义）：
+// TestSingleAccountDoesNotRotate 单账号渠道（SingleAccount 语义）：
 // 必须保持「原文透传、不切号、不惩罚」。
 //
-// 这是对照测试——确保我修 GLM 时没破坏 oczen 的既定行为。
+// 这是对照测试——确保修 GLM 的轮换逻辑时没破坏单账号渠道的既定行为。
 func TestSingleAccountDoesNotRotate(t *testing.T) {
 	up := &rotatingUpstream{failUID: "solo"}
 
 	p := pool.New(t.TempDir() + "/state.json")
-	p.Add(&auth.Auth{Kind: "oczen", AccessToken: "public", ExpiresAt: 4102444800, UID: "solo"})
+	p.Add(singleAcctAuth())
 
 	h := NewHandler(Config{
 		Runtimes: map[provider.Kind]*Runtime{
-			provider.Oczen: {Kind: provider.Oczen, Pool: p, Upstream: up,
+			singleAcctKind: {Kind: singleAcctKind, Pool: p, Upstream: up,
 				StaticModels: []provider.ModelInfo{{ID: "m"}}, SingleAccount: true},
 		},
 		APIKey:       "",
@@ -172,7 +174,7 @@ func TestSingleAccountDoesNotRotate(t *testing.T) {
 		ErrCooldown:  60_000_000_000,
 	})
 
-	body := `{"model":"oczen/m","messages":[{"role":"user","content":"hi"}],"stream":false}`
+	body := `{"model":"singleacct/m","messages":[{"role":"user","content":"hi"}],"stream":false}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -190,7 +192,7 @@ func TestSingleAccountDoesNotRotate(t *testing.T) {
 	}
 
 	// 唯一账号**不得**被禁用（否则整条渠道下线）
-	st, _ := p.Status("solo")
+	st, _ := p.Status(singleAcctUID)
 	if st.Disabled {
 		t.Error("单账号渠道的唯一账号不得被禁用（会导致整条渠道永久下线）")
 	}
@@ -203,12 +205,8 @@ func TestSingleAccountDoesNotRotate(t *testing.T) {
 func TestGLMNotSingleAccount(t *testing.T) {
 	// 从 main.go 的装配语义出发：这里断言「多账号池 + 非 SingleAccount」
 	// 能正常轮换（用上面的 TestMultiAccountRotatesOnSessionDead 已证明）。
-	// 本测试额外检查 provider.GLM 常量存在且非 oczen。
 	if provider.GLM.String() != "glm" {
 		t.Errorf("provider.GLM = %q, want glm", provider.GLM.String())
-	}
-	if provider.GLM == provider.Oczen {
-		t.Error("GLM 不应与 oczen 同值")
 	}
 	// 序列化检查：Runtime 零值 SingleAccount 应为 false
 	rt := Runtime{Kind: provider.GLM}

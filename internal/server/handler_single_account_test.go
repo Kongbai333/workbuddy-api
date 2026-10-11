@@ -1,9 +1,12 @@
-// handler_single_account_test.go 回归测试：单账号渠道（oczen）不得对唯一账号施加任何惩罚。
+// handler_single_account_test.go 回归测试：SingleAccount 渠道不得对唯一账号施加任何惩罚。
 //
-// 背景（2026-09-24 实测）：oczen 是匿名渠道，整池只有一个虚拟账号且**不可重登**。
-// 任何账号级惩罚（冷却冷却/错误计数/禁用）都等价于「整条渠道下线」——因为无号可轮换，
-// 惩罚后 handler 会在挑号阶段直接返回 no_healthy_account(503)，而不是把上游原始错误
-// 透传给客户端，连「稍后重试」都做不到。
+// 背景（2026-09-24 实测）：该机制最早是为匿名渠道加的 —— 整池只有一个虚拟账号且
+// **不可重登**。任何账号级惩罚（冷却/错误计数/禁用）都等价于「整条渠道下线」：
+// 无号可轮换，惩罚后 handler 会在挑号阶段直接返回 no_healthy_account(503)，
+// 而不是把上游原始错误透传给客户端，连「稍后重试」都做不到。
+//
+// 该渠道现已下线，但 SingleAccount 是**结构化通用机制**（不硬编码渠道名），
+// 故本测试改用自造的渠道标识继续覆盖，语义完全不变。
 //
 // 历史缺陷（本测试锁定）：
 //  1. 429 → ErrSoftRate → Cooldown(SoftCooldown)：文档声称「429 是唯一需要的背压」，
@@ -23,10 +26,20 @@ import (
 	"time"
 
 	"workbuddy-api/internal/auth"
-	"workbuddy-api/internal/oczen"
 	"workbuddy-api/internal/pool"
 	"workbuddy-api/internal/provider"
 )
+
+// 测试用的「单账号渠道」标识：自造而非复用真实渠道，避免测试与生产渠道耦合。
+const (
+	singleAcctKind provider.Kind = "singleacct"
+	singleAcctUID                = "solo"
+)
+
+// singleAcctAuth 构造该虚拟渠道的唯一账号。
+func singleAcctAuth() *auth.Auth {
+	return &auth.Auth{Kind: string(singleAcctKind), AccessToken: "public", ExpiresAt: 4102444800, UID: singleAcctUID}
+}
 
 // codeUpstream 假上游：按指定 HTTP 状态码返回错误，或模拟传输层错误。
 type codeUpstream struct {
@@ -52,7 +65,18 @@ func (u *codeUpstream) Classify(st int, body string) provider.ErrKind {
 	if u.classify != nil {
 		return u.classify(st, body)
 	}
-	return (&oczen.Client{}).Classify(st, body)
+	// 关键：故意返回「通常会引发惩罚」的分类 ——
+	// 若 SingleAccount 的短路失效，账号就会被冷却，测试立刻失败。
+	// 若这里返回 ErrPassthrough（本身就不罚号），测试将变成假阳性。
+	switch {
+	case st == http.StatusTooManyRequests:
+		return provider.ErrSoftRate
+	case st >= 500:
+		return provider.ErrServer
+	case st >= 400:
+		return provider.ErrClient
+	}
+	return provider.ErrNone
 }
 func (u *codeUpstream) ChatStream(*auth.Auth, []byte) (io.ReadCloser, int, []byte, error) {
 	u.calls++
@@ -76,10 +100,10 @@ func (u *codeUpstream) Aggregate(io.Reader, string) (map[string]any, error) {
 func newSingleAccountHandler(t *testing.T, up *codeUpstream) (*Handler, *pool.Pool) {
 	t.Helper()
 	p := pool.New(t.TempDir() + "/state.json")
-	p.Add(oczen.AnonymousAuth())
+	p.Add(singleAcctAuth())
 	h := NewHandler(Config{
 		Runtimes: map[provider.Kind]*Runtime{
-			provider.Oczen: {Kind: provider.Oczen, Pool: p, Upstream: up, SingleAccount: true},
+			singleAcctKind: {Kind: singleAcctKind, Pool: p, Upstream: up, SingleAccount: true},
 		},
 		APIKey: "k", MaxRotate: 3,
 		HardCooldown: time.Hour, SoftCooldown: time.Minute,
@@ -90,7 +114,7 @@ func newSingleAccountHandler(t *testing.T, up *codeUpstream) (*Handler, *pool.Po
 
 // call 发一次 chat 请求，返回响应记录。
 func call(h *Handler) *httptest.ResponseRecorder {
-	body := `{"model":"oczen/big-pickle","stream":false,"messages":[{"role":"user","content":"hi"}]}`
+	body := `{"model":"singleacct/m","stream":false,"messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
@@ -106,7 +130,7 @@ func TestSingleAccountNoCooldownOnAnyStatus(t *testing.T) {
 		h, p := newSingleAccountHandler(t, up)
 		rec := call(h)
 
-		st, _ := p.Status(oczen.AnonymousUID)
+		st, _ := p.Status(singleAcctUID)
 		if st.Cooling || st.Disabled {
 			t.Errorf("status=%d: 唯一账号被惩罚（cooling=%t disabled=%t）——单账号渠道不应冷却",
 				code, st.Cooling, st.Disabled)
@@ -142,7 +166,7 @@ func TestSingleAccount429NotCooled_SecondRequestStillReachesUpstream(t *testing.
 	if up.calls != 2 {
 		t.Fatalf("上游实际收到 %d 次请求，want 2（冷却会让第 2 次被挑号阶段挡掉）", up.calls)
 	}
-	if st, _ := p.Status(oczen.AnonymousUID); st.Cooling {
+	if st, _ := p.Status(singleAcctUID); st.Cooling {
 		t.Fatal("429 后账号被冷却——单账号渠道冷却即整条渠道下线")
 	}
 }
@@ -157,7 +181,7 @@ func TestSingleAccountTransportErrorNeverCools(t *testing.T) {
 		if rec := call(h); rec.Code != http.StatusBadGateway {
 			t.Fatalf("第 %d 次传输层错误应返回 502，实际 %d：%s", i, rec.Code, rec.Body.String())
 		}
-		if st, _ := p.Status(oczen.AnonymousUID); st.Cooling || st.ErrCount != 0 {
+		if st, _ := p.Status(singleAcctUID); st.Cooling || st.ErrCount != 0 {
 			t.Fatalf("第 %d 次后账号被惩罚（cooling=%t errCount=%d）——传输层抖动不应罚单账号",
 				i, st.Cooling, st.ErrCount)
 		}
@@ -168,17 +192,17 @@ func TestSingleAccountTransportErrorNeverCools(t *testing.T) {
 // 留下冷却/错误计数，ClearPenalty 必须把它们清掉（否则升级后渠道仍然下线）。
 func TestClearPenaltyHealsLegacyState(t *testing.T) {
 	p := pool.New(t.TempDir() + "/state.json")
-	p.Add(oczen.AnonymousAuth())
+	p.Add(singleAcctAuth())
 	// 模拟旧版本写下的脏状态：冷却 1 小时 + 错误计数
-	p.Cooldown(oczen.AnonymousUID, pool.CoolSoft, time.Hour, "429 rate limit")
-	p.NoteError(oczen.AnonymousUID, 1, time.Hour)
-	if st, _ := p.Status(oczen.AnonymousUID); !st.Cooling {
+	p.Cooldown(singleAcctUID, pool.CoolSoft, time.Hour, "429 rate limit")
+	p.NoteError(singleAcctUID, 1, time.Hour)
+	if st, _ := p.Status(singleAcctUID); !st.Cooling {
 		t.Fatal("前置条件失败：账号应处于冷却中")
 	}
 
-	p.ClearPenalty(oczen.AnonymousUID)
+	p.ClearPenalty(singleAcctUID)
 
-	st, _ := p.Status(oczen.AnonymousUID)
+	st, _ := p.Status(singleAcctUID)
 	if st.Cooling || st.ErrCount != 0 || st.Reason != "" {
 		t.Fatalf("ClearPenalty 后仍有惩罚残留：cooling=%t errCount=%d reason=%q",
 			st.Cooling, st.ErrCount, st.Reason)

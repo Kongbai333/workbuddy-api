@@ -564,7 +564,7 @@ var channelKind = map[string]bool{
 	string(provider.Qoder): true, string(provider.QoderCN): true, string(provider.QoderCOM): true,
 	string(provider.QwenWork): true, string(provider.MonkeyCode): true,
 	string(provider.Raccoon): true, string(provider.Loomy): true,
-	string(provider.Oczen): true, string(provider.GLM): true,
+	string(provider.GLM): true,
 }
 
 // traeKinds 为 Trae 系渠道集合（TraeWork + TraeCode 共用账号与积分池——上游只为
@@ -586,10 +586,6 @@ func normalizePlatform(g string) string {
 	}
 	return g
 }
-
-// noExpiryChannel 判定渠道是否无临期/到期概念（oczen 匿名免费：上游对其
-// resource_detail 恒返拒绝，临期数据喂入方须跳过，否则每轮恒报失败噪音）。
-func noExpiryChannel(g string) bool { return g == string(provider.Oczen) }
 
 // platformRowsLocked 生成平台表行（调用方须持锁）：按 group 聚合账号数/余额/今日
 // 收入/今日花费/作废与净值/今日 Token，并按各账号 expireAt 归入 7 日内/今日/明日

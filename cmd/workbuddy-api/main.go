@@ -42,7 +42,6 @@ import (
 	"workbuddy-api/internal/ledger"
 	"workbuddy-api/internal/loomy"
 	"workbuddy-api/internal/monkeycode"
-	"workbuddy-api/internal/oczen"
 	"workbuddy-api/internal/platform"
 	"workbuddy-api/internal/pool"
 	"workbuddy-api/internal/provider"
@@ -197,11 +196,8 @@ func main() {
 	if err != nil {
 		fatal("读取 Loomy 账号目录失败：%v", err)
 	}
-	// OpenCodeZen 匿名通道无凭证文件：全程只有一个虚拟账号，
-	// 不经目录扫描、不参与 reload（见 app.reloadAccounts 的说明）。
-	ocAuths := []*auth.Auth{oczen.AnonymousAuth()}
-	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, glm=%d, monkeycode=%d, raccoon=%d, loomy=%d, oczen=%d(匿名) from %s",
-		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(glmAuths), len(mcAuths), len(rcAuths), len(lmAuths), len(ocAuths), cfg.AuthDir)
+	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, glm=%d, monkeycode=%d, raccoon=%d, loomy=%d from %s",
+		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(glmAuths), len(mcAuths), len(rcAuths), len(lmAuths), cfg.AuthDir)
 
 	wbPool := pool.New(filepath.Join(stateDir, "state-workbuddy.json"))
 	for _, a := range wbAuths {
@@ -253,16 +249,6 @@ func main() {
 	for _, a := range lmAuths {
 		lmPool.Add(a)
 	}
-	// oczen：整池只有一个匿名虚拟账号，state 仅用于记冷却（无积分、无签到）
-	ocPool := pool.New(filepath.Join(stateDir, "state-oczen.json"))
-	for _, a := range ocAuths {
-		ocPool.Add(a)
-	}
-	// 安全网：匿名账号不允许被禁用或被冷却（任何历史 state 或异常路径写脏都可自愈）。
-	// 冷却也要清：该渠道只有这一个账号且无号可轮换，冷却即等于整条渠道下线。
-	ocPool.SetDisabled(oczen.AnonymousUID, false)
-	ocPool.ClearPenalty(oczen.AnonymousUID)
-
 	wbUp := upstream.New()
 	wbUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	trUp := traework.New()
@@ -286,7 +272,6 @@ func main() {
 	rcUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	lmUp := loomy.New()
 	lmUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
-	ocUp := oczen.New()
 	glmUp := glm.New()
 	// ⚠️ 只改 HTTP（非流式）的 Timeout。
 	// **不要**给 glmUp.StreamHTTP 设 Timeout —— 流式请求一旦有整体超时，
@@ -311,7 +296,6 @@ func main() {
 		provider.MonkeyCode.String():  {mcUp.HTTP, mcUp.StreamHTTP},
 		provider.Raccoon.String():     {rcUp.HTTP, rcUp.StreamHTTP},
 		provider.Loomy.String():       {lmUp.HTTP, lmUp.StreamHTTP},
-		provider.Oczen.String():       {ocUp.HTTP, ocUp.StreamHTTP},
 		// glm 两个 client 都要传（SetTransportProxy 会**新建** Transport，
 		// 只套 HTTP 会让 StreamHTTP 仍走直连（代理对流式不生效）。
 		provider.GLM.String(): {glmUp.HTTP, glmUp.StreamHTTP},
@@ -389,10 +373,6 @@ func main() {
 	// 跳过、不会误禁用账号，但每天仍空跑一次并记录失败，故直接关掉。
 	lmSch := scheduler.New(scheduler.Config{Pool: lmPool, Upstream: lmUp, Name: "loomy",
 		CheckinMinutes: []int{}, KeepaliveHours: []int{}, ExpiringThreshold: expiringThreshold, Ledger: lg})
-	// OpenCodeZen 匿名：无账号、无签到、无 token 可保活（凭证是常量 public）。
-	// CheckinMinutes/KeepaliveHours 均为显式空切片 → 调度器不发生任何上游调用。
-	ocSch := scheduler.New(scheduler.Config{Pool: ocPool, Upstream: ocUp, Name: "oczen",
-		CheckinMinutes: []int{}, KeepaliveHours: []int{}})
 	// 智谱清言：签到与对话联动（当日需先对话才能领打卡进度），故保活与签到
 	// 合成一个流程（glm.Client.Keepalive 先发最小对话再签到）。
 	// 用 DailyCheckin 通道驱动：CheckinMinutes 用全局签到时间，
@@ -426,17 +406,6 @@ func main() {
 		// 故按正常多账号渠道处理：错误分类惩罚 + 池内轮换。
 		//
 		// 唯一真实约束是「refresh_token 轮换必须落盘」，已由 glm.RefreshToken 保证。
-		// ── OpenCodeZen（oczen）渠道已按用户要求**停用** ────────────────────
-		//
-		// 不登记到 Runtime ⇒ 面板不显示该渠道、路由不接受 oczen/* 请求。
-		// 实现代码（internal/oczen）与配置字段（oczen_api_key）均保留，
-		// 需要恢复时把下面这行同时加回本 map 与 appRuntimes 即可：
-		//
-		//   provider.Oczen: {Kind: provider.Oczen, Pool: ocPool, Upstream: ocUp,
-		//     StaticModels: oczen.StaticModels(), SingleAccount: true, NoCooldownOnServerError: true},
-		//
-		// 停用原因：该渠道只会反代上游的免费模型，而免费档不受零留存政策保护
-		// （数据可能被用于改进模型）—— 具体见 docker/README 与项目记忆。
 	}
 	appRuntimes := map[provider.Kind]*app.Runtime{
 		provider.WorkBuddy:   {Kind: provider.WorkBuddy, Pool: wbPool, Upstream: wbUp, Scheduler: wbSch},
@@ -451,7 +420,6 @@ func main() {
 		provider.Raccoon:     {Kind: provider.Raccoon, Pool: rcPool, Upstream: rcUp, Scheduler: rcSch},
 		provider.Loomy:       {Kind: provider.Loomy, Pool: lmPool, Upstream: lmUp, Scheduler: lmSch},
 		provider.GLM:         {Kind: provider.GLM, Pool: glmPool, Upstream: glmUp, Scheduler: glmSch},
-		// ── oczen 已停用：不登记（面板不显示该渠道）。恢复方法见上方 serverRuntimes 的注释。
 	}
 
 	appInst, err := app.New(app.Options{
@@ -529,18 +497,11 @@ func main() {
 			provider.QoderCN.String():     {qcnUp.HTTP, qcnUp.StreamHTTP},
 			provider.QoderCOM.String():    {qcmUp.HTTP, qcmUp.StreamHTTP},
 			provider.QwenWork.String():    {qwUp.HTTP, qwUp.StreamHTTP},
-			provider.Oczen.String():       {ocUp.HTTP, ocUp.StreamHTTP},
 			// glm 两个 client 都要传（同启动路径的理由：SetTransportProxy 新建 Transport）
 			provider.GLM.String(): {glmUp.HTTP, glmUp.StreamHTTP},
 		})
 	})
-	// 面板保存 oczen key 后热更新渠道凭证；启动时也应用一次配置中的初始 key
-	appInst.SetOczenSyncer(ocUp.SetAPIKey)
-	ocUp.SetAPIKey(cfg.OczenAPIKey)
 	compat.SetAPIKeySource(inner.CurrentAPIKey) // 面板改 API-Key 后，兼容层立即跟随
-	compat.SetSystemOneHandler(func(w http.ResponseWriter, r *http.Request, state string, questions map[string]any) (int, []byte, error) {
-		return ocUp.SystemOne(state, questions)
-	})
 	mux := http.NewServeMux()
 	compat.Routes(mux) // POST /v1/responses · /v1/messages · /v1/messages/count_tokens · /v1/systemone
 	mux.Handle("/", inner)
@@ -568,7 +529,6 @@ func main() {
 	go mcSch.Run(sctx)
 	go rcSch.Run(sctx)
 	go lmSch.Run(sctx)
-	go ocSch.Run(sctx)
 	// ⚠️ 新增渠道时必须在这里补 Run()。
 	// 漏了**不会报错**——只表现为「该渠道的自动签到/保活从不运行」，
 	// 而手工触发（面板按钮 / RunCheckinNow）仍然可用，极难发现。
@@ -579,8 +539,6 @@ func main() {
 	// - traework / workbuddy(CN) 虽有签到顺带拉余额，但一天只有两次，
 	//   其间 token 若在别处被轮换（401）也无法自愈；统一纳入循环才能
 	//   启动即出真实拆分数字，并靠 401 自愈（refreshIfSessionDead）及时恢复。
-	// oczen 不在其中：匿名通道无积分可刷（面板显示「不适用」），
-	// 其 FetchModelPricing 已在费率刷新路径单独覆盖。
 	// glm 纳入：其凭据本体是 refresh_token（accessToken 可为空），
 	// 积分靠 member_info 拉取，不刷就永远是 0。
 	appInst.StartCreditAutoRefresh(sctx, []provider.Kind{
@@ -616,7 +574,7 @@ func main() {
 		if appInst.PanelAuthEnabled() {
 			fmt.Printf("  Panel auth:    admin_password enabled (cookie session, 7d)\n")
 		}
-		fmt.Printf("  Accounts:      workbuddy=%d traework=%d qoder=%d oczen=%d(匿名)\n", len(wbAuths), len(trAuths), len(qdAuths), len(ocAuths))
+		fmt.Printf("  Accounts:      workbuddy=%d traework=%d qoder=%d\n", len(wbAuths), len(trAuths), len(qdAuths))
 		fmt.Printf("\nPress Ctrl+C to exit\n")
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)

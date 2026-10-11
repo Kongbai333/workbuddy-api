@@ -33,7 +33,6 @@ const (
 	// session 约 14 天且上游无 refresh 端点，到期需重新导入。
 	Loomy    Kind = "loomy"
 	TraeCode Kind = "traecode" // Trae 代码版：与 TraeWork 同一上游、共用账号，function=solo_agent
-	Oczen    Kind = "oczen"    // OpenCodeZen 匿名免费通道（opencode.ai/zen，无账号、凭证固定 public）
 	GLM      Kind = "glm"      // 智谱清言（chatglm.cn 网页版私有接口，凭据为 chatglm_refresh_token）
 )
 

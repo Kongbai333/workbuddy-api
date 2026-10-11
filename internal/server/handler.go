@@ -35,7 +35,7 @@ type Runtime struct {
 	// 其余渠道保持 false，行为不变。
 	NoCooldownOnServerError bool
 
-	// SingleAccount 声明该渠道只有唯一一个、且**无法人工恢复**的账号（当前仅 oczen 匿名）。
+	// SingleAccount 声明该渠道只有唯一一个、且**无法人工恢复**的账号。
 	// 语义：任何账号级惩罚（冷却/计数/禁用）都等价于「整条渠道下线」，故一律不适用——
 	// 出错就原文透传，把重试交给客户端。区别于 NoCooldownOnServerError（只豁免 5xx）。
 	// 生效范围：
@@ -551,18 +551,18 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			case provider.ErrHardCredit:
 				rt.Pool.Cooldown(acct.UID, pool.CoolHard, h.cfg.HardCooldown, "余额/权益不足")
 			case provider.ErrSoftRate:
-			// 429/6004 上游按模型限额（「您也可以切换其他模型继续使用」）：
-			// 只冷却该账号的该模型，同号其他模型继续参与选号；
-			// 短时间内第二个模型也撞墙时 CooldownModel 会升级整号冷却（防上游按账号计时）。
-			// 冷却时长按 6004 响应体的真实重置点解析（#82）：固定 60s 与上游「按重置点解封」
-			// 不符，解析失败/非正回退 SoftCooldown；升级时整号冷却到最晚重置点。
-			escalated := rt.Pool.CooldownModel(acct.UID, model, h.softRateCooldown(string(respBody)), "429 rate limit")
-			if escalated {
-				log.Printf("model cooldown escalated to account platform=%s uid=%s model=%s", rt.Kind, acct.UID, model)
-			} else {
-				log.Printf("model cooldown platform=%s uid=%s model=%s", rt.Kind, acct.UID, model)
-			}
-		case provider.ErrSessionDead:
+				// 429/6004 上游按模型限额（「您也可以切换其他模型继续使用」）：
+				// 只冷却该账号的该模型，同号其他模型继续参与选号；
+				// 短时间内第二个模型也撞墙时 CooldownModel 会升级整号冷却（防上游按账号计时）。
+				// 冷却时长按 6004 响应体的真实重置点解析（#82）：固定 60s 与上游「按重置点解封」
+				// 不符，解析失败/非正回退 SoftCooldown；升级时整号冷却到最晚重置点。
+				escalated := rt.Pool.CooldownModel(acct.UID, model, h.softRateCooldown(string(respBody)), "429 rate limit")
+				if escalated {
+					log.Printf("model cooldown escalated to account platform=%s uid=%s model=%s", rt.Kind, acct.UID, model)
+				} else {
+					log.Printf("model cooldown platform=%s uid=%s model=%s", rt.Kind, acct.UID, model)
+				}
+			case provider.ErrSessionDead:
 				rt.Pool.Disable(acct.UID, "session dead")
 			case provider.ErrNotFound:
 				rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "upstream 404")
@@ -725,11 +725,6 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(sts) == 0 {
-		if noLoginChannel(rt.Kind) {
-			writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account",
-				fmt.Sprintf("渠道 %s 尚未就绪（虚拟账号未装配）：请重启程序", rt.Kind))
-			return
-		}
 		writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account",
 			fmt.Sprintf("渠道 %s 尚未绑定账号：请在面板「账号管理」中添加 %s 账号（或把模型改为已接入渠道，如 workbuddy/glm-5.2）",
 				rt.Kind, rt.Kind))
@@ -744,11 +739,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if bound == 0 {
-		// 匿名渠道没有「重新登录」这个概念，给出针对性提示（否则会误导用户去找登录入口）。
 		hint := fmt.Sprintf("%s 账号需重新登录（日志会有 refresh token is invalid）", rt.Kind)
-		if noLoginChannel(rt.Kind) {
-			hint = "该渠道无需登录，稍后重试即可（若持续失败请查看日志）"
-		}
 		// 多数是限流冷却而非登录态问题：给出最早解冻时间，重登提示仅在无任何冷却时兜底。
 		if cooling > 0 && !earliest.IsZero() {
 			hint = fmt.Sprintf("最早约 %s 解冻（多为限流冷却，到点自动恢复；若长时间未恢复再检查登录态）", formatUnfreeze(earliest))
@@ -778,15 +769,10 @@ func formatUnfreeze(t time.Time) string {
 	return t.Format("2006-01-02 15:04")
 }
 
-// noLoginChannel 报告渠道是否「无登录概念」（不存在凭证文件、也无重登入口）。
-// 用于把「去面板重新登录」这类引导文案限定在真正适用的渠道上，
-// 避免匿名通道（oczen）被误导去找一个不存在的登录按钮。
-func noLoginChannel(k provider.Kind) bool { return k == provider.Oczen }
-
 func (h *Handler) runtimeForModel(model string) (*Runtime, string, error) {
 	parts := strings.SplitN(strings.TrimSpace(model), "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return nil, "", fmt.Errorf("model must use explicit prefix: workbuddy/<model> / workbuddyai/<model> / traework/<model> / qoder/<model> / qodercn/<model> / qodercom/<model> / qwenwork/<model> / glm/<model> / oczen/<model>")
+		return nil, "", fmt.Errorf("model must use explicit prefix: workbuddy/<model> / workbuddyai/<model> / traework/<model> / qoder/<model> / qodercn/<model> / qodercom/<model> / qwenwork/<model> / glm/<model>")
 	}
 	kind := provider.Kind(parts[0])
 	rt := h.cfg.Runtimes[kind]

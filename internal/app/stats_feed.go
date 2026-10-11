@@ -76,17 +76,16 @@ func (a *App) statsAccounts() []statsEngine.Account {
 	for _, s := range statuses {
 		group := a.accountGroup(s.UID)
 		out = append(out, statsEngine.Account{
-			UID:       s.UID,
-			Group:     group,
-			Nickname:  s.Nickname,
-			Credits:   s.Credits,
-			Expiring:  s.ExpiringCredits,
-			Cooling:   s.Cooling,
-			Until:     fmtTime(s.Until),
-			Reason:    s.Reason,
-			Disabled:  s.Disabled,
-			ErrCount:  s.ErrCount,
-			CreditsNA: group == provider.Oczen.String(),
+			UID:      s.UID,
+			Group:    group,
+			Nickname: s.Nickname,
+			Credits:  s.Credits,
+			Expiring: s.ExpiringCredits,
+			Cooling:  s.Cooling,
+			Until:    fmtTime(s.Until),
+			Reason:   s.Reason,
+			Disabled: s.Disabled,
+			ErrCount: s.ErrCount,
 		})
 	}
 	return out
@@ -112,8 +111,7 @@ func (a *App) feedLedgerExpire(now time.Time) {
 
 // applyExpiryFromItems 把 UserResourceDetail 的资源条目喂引擎（账号维度的
 // 最近临期日 + 当日额度）。挂在 creditTotals（积分自动刷新已拉到 items，
-// 复用免二次调用）；无可喂条目时写空值清除残留。oczen 由调用方天然排除
-// （积分自动刷新的 kinds 不含它）。
+// 复用免二次调用）；无可喂条目时写空值清除残留。
 func (a *App) applyExpiryFromItems(uid string, items []provider.ResourceItem) {
 	if a.stats == nil {
 		return

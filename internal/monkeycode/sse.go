@@ -19,7 +19,7 @@ import (
 )
 
 // anthropicStreamReader 逐行读取上游 Anthropic SSE，吐出 OpenAI Chat SSE。
-// 与 oczen 的 modelRewriter 同构：按行转换、即时吐出，不攒整包。
+// 按行转换、即时吐出，不攒整包。
 type anthropicStreamReader struct {
 	src   *bufio.Reader
 	model string

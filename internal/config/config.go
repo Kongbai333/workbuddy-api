@@ -165,18 +165,9 @@ type Config struct {
 	} `json:"compat"`
 
 	// Proxies 单渠道上游代理：key 为渠道 kind（workbuddy/traework/qoder/qodercn/
-	// qodercom/workbuddyai/qwenwork/oczen），value 为代理 URL（http/https/socks5）。
-	// 空串或未列出的渠道直连。主要用途：给 oczen 等有区域限制的渠道走代理。
+	// qodercom/workbuddyai/qwenwork），value 为代理 URL（http/https/socks5）。
+	// 空串或未列出的渠道直连。主要用途：给有区域限制的渠道走代理。
 	Proxies map[string]string `json:"proxies,omitempty"`
-
-	// OczenAPIKey OpenCodeZen 渠道自定义 API key（sk-...）；空 = 匿名凭证（public）。
-	// 自定义 key 有独立配额（不受匿名通道共享限流），且可调用付费模型（需账户余额）。
-	//
-	// ⚠️ 该渠道已按要求**停用**（不登记到 Runtime，面板与路由均不可见）。
-	// 字段保留有两个理由：① 不破坏既有 config.json（旧文件可能已有此键，
-	// 删字段虽然不会报错但会让配置含义变得不明）；② 将来恢复渠道时配置无需改动。
-	// 停用与恢复方式见 cmd/workbuddy-api/main.go 的 serverRuntimes 注释。
-	OczenAPIKey string `json:"oczen_api_key,omitempty"`
 
 	// 解析后
 	HardCreditDur  time.Duration `json:"-"`
