@@ -1565,13 +1565,10 @@ function bind() {
   // 顶栏齿轮进入统一设置（点击地址/Key 文本仍为复制）
   $("btnSettings").onclick = openSettings;
 
-  // 成长任务：无支持渠道时禁用入口（成长中心目前仅 WorkBuddy 国内版提供）。
-  // 并探测是否有上一轮仍在执行（例如刷新页面后），有则续上轮询。
-  if (!state.growth_supported) {
-    $("btnTasksAll").disabled = true;
-    $("btnTasksAll").title = "当前没有支持成长中心的渠道（仅 WorkBuddy 国内版提供）";
-  }
-  startTaskPolling();
+  // 注意：这里**不能**读 state —— bind() 在 loadState() 之前运行，
+  // 此刻 state 还是 null，访问 state.xxx 会抛 TypeError 并中断整个 bind()
+  // （表现为「账号列表空、所有按钮都没绑上」）。
+  // 依赖 state 的初始化一律放在 init() 的 await loadState() 之后。
 
   // 统一设置弹层
   $("btnSettingsSave").onclick = saveSettings;
@@ -1609,6 +1606,22 @@ function bind() {
 }
 
 // ---------- 初始化 ----------
+// afterStateReady 在 state 就绪后执行「依赖 state 的一次性初始化」。
+//
+// 为什么单独抽出来：bind() 跑在 loadState() **之前**，此刻 state 仍是 null。
+// 在 bind() 里访问 state.xxx 会抛 TypeError 并中断整个 bind()，
+// 连带 init() 走不到 await loadState() —— 表现为「账号列表空、所有按钮都没绑上」，
+// 而且控制台只报一个不起眼的 null 读取错误，极难联想到是初始化顺序问题。
+function afterStateReady() {
+  // 成长任务入口：无支持渠道时禁用（成长中心目前仅 WorkBuddy 国内版提供）。
+  if (state && !state.growth_supported) {
+    $("btnTasksAll").disabled = true;
+    $("btnTasksAll").title = "当前没有支持成长中心的渠道（仅 WorkBuddy 国内版提供）";
+  }
+  // 探测是否有上一轮成长任务仍在执行（例如刷新页面后），有则续上轮询。
+  startTaskPolling();
+}
+
 (async function init() {
   bind();
   bindMainTabs();
@@ -1620,6 +1633,8 @@ function bind() {
     authSession = st.auth_session || "";
   } catch (e) { /* 探针失败走下面的常规加载（如代理拦截） */ }  loadUsage(); // 页面加载即拉取（首次渲染自动刷新，不依赖手动点击）
   await loadState(); // 状态瞬间返回
+  // 依赖 state 的初始化必须放在这里之后（bind() 阶段 state 还是 null）。
+  afterStateReady();
   await loadFees();  // 费率表用缓存/静态兜底，秒开
   // 运行统计：统计/请求日志 30s、运行日志 15s 常驻轮询
   // （不依赖当前 tab——里程碑 toast 要在任何 tab 下及时弹出；tab 切入时另有即时拉取）
