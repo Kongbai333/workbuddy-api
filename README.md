@@ -247,14 +247,43 @@ Claude Code / Cursor 等支持自定义 OpenAI 端点的工具直接填即可；
 
 ---
 
-## 六、项目渊源与致谢
+## 六、项目整合来源
 
-本项目是各渠道的**集成与聚合**：在社区既有公开成果之上做多渠道路由、
-账号池调度、协议适配与界面封装。
+workbuddy-api 整合了三个开源项目的能力。三者同源，都出自早期的
+`xxx2api` 系列，但各自解决不同问题、互不包含：
 
-**本项目不产出、不包含、不分发任何协议逆向研究成果。** 各渠道的接口参数、
-签名算法、风控指纹等底层知识全部来自社区其他开源项目的公开成果；
-所有逆向相关的功劳与风险归于下述各项目作者。
+| 来源项目 | 定位 | 本项目从中整合的内容 |
+|---|---|---|
+| [sddvcm/workbuddy-wild](https://github.com/sddvcm/workbuddy-wild) | 同作者的旧项目，Wails 桌面形态 | **账号调度实战经验**：签到遇限流时轮换设备号重试、从本机客户端读取真实设备号、账号挑号策略（临期/积分/轮询）、Windows 凭据 DPAPI 加密、单实例锁、离线镜像构建 |
+| [linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) | 专注 WorkBuddy 成长任务体系 | **成长任务全链路**：成长中心协议层（任务列表/接受/领奖）、连登兑换与抽奖、猫猫旅行、活跃上报、一键完成任务编排 |
+| [rockswang/wild-work](https://github.com/rockswang/wild-work) | 多渠道聚合 + 纯 Go Web UI | **项目基线**：多渠道 provider 抽象与路由、三协议兼容层、Web 管理面板、用量与积分双流水、流式空闲监控、请求体脱敏、运行统计面板、Docker 部署 |
+
+### 各自贡献的具体位置
+
+| 来源 | 主要代码 |
+|---|---|
+| workbuddy-wild | `internal/traework/client.go`（换号重试）、`internal/login_trae/device.go`（设备号读取）、`internal/pool/strategy.go`（挑号策略）、`internal/auth/secure_windows.go`（DPAPI）、`internal/platform/`（单实例锁） |
+| workbuddy2api-panel | `internal/upstream/growth.go`、`growth_tasks.go`、`desktop.go`、`mp_report.go`、`growth_auto.go`、`internal/scheduler/growth.go` |
+| wild-work | `internal/provider/`、`internal/gateway/`（三协议）、`internal/ledger/`、`internal/idle/`、`internal/sanitize/`、`internal/stats/`、`cmd/workbuddy-api/web/`（面板） |
+
+**三者的边界很清楚**：workbuddy-wild 只有 2 个渠道、workbuddy2api-panel 只有
+WorkBuddy 单渠道、wild-work 没有成长任务体系 —— 任何一方都不具备本项目的
+完整形态。本项目做的事情是把它们拼起来并解决随之而来的问题，例如：
+
+- wild-work 的 TraeWork 模型目录不按 function 过滤，「列表里列得出、一调用就
+  4001」，需要双池合并并登记模型归属才能消除；
+- workbuddy-wild 的 TraeWork 签到换号重试在 wild-work 里没有，缺失会导致
+  多账号共用设备号时抢不到当天额度；
+- panel 的任务领奖端点只在 `WebBase` 域提供，而 wild-work 只有 chat 与 billing
+  两个域，不补上则领奖恒返回 400。
+
+> 再次说明：**本项目不产出、不包含、不分发任何协议逆向研究成果。**
+> 三者都是集成与聚合，各渠道的接口参数、签名算法、风控指纹等底层知识全部来自
+> 下表各上游项目的公开成果；所有逆向相关的功劳与风险归于下述各项目作者。
+
+---
+
+## 七、致谢：各渠道协议来源
 
 本项目的渠道协议实现参考了以下开源项目（各渠道能够落地的前提）：
 
@@ -278,7 +307,7 @@ Claude Code / Cursor 等支持自定义 OpenAI 端点的工具直接填即可；
 
 ---
 
-## 七、风险提示与免责声明
+## 八、风险提示与免责声明
 
 **风险提示**
 
