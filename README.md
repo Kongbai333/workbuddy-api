@@ -88,12 +88,27 @@
 
 ## 配置 AI 客户端
 
+### 0. 关于 API Key
+
+**首次启动会自动生成一个随机的 API Key**，写入 `config.json` 的 `api_key` 字段。
+每个安装实例的 key 都不同，请从以下任一途径查看你本机实际生效的值：
+
+- 面板顶栏的 **API-Key** 文本框（点击可复制）
+- ⚙ 设置弹层 → *接口与鉴权*
+- 直接看 `config.json`
+- 无头模式启动时终端会打印
+
+下方所有示例里的 `YOUR_API_KEY` 都请替换成这个值。
+
+> 之所以不用固定默认值：固定值会随二进制一起公开，任何人下载 exe 就知道你的 key。
+> 随机生成让「忘记改 key」不再是隐患 —— 猜不出来。
+
 ### 1. 获取模型列表
 
 workbuddy-api 的 `/v1/models` 端点返回当前所有可用模型。在终端中执行：
 
 ```bash
-curl -s -H "Authorization: Bearer WildWorkAPI" http://127.0.0.1:7863/v1/models
+curl -s -H "Authorization: Bearer YOUR_API_KEY" http://127.0.0.1:7863/v1/models
 ```
 
 ### 2. 配置 Pi（models.json）
@@ -107,7 +122,7 @@ Pi 不支持自动拉取模型列表，需要手动编辑 `~/.pi/agent/models.js
       "name": "workbuddy-api",
       "api": "openai-completions",
       "baseUrl": "http://127.0.0.1:7863/v1",
-      "apiKey": "WildWorkAPI",
+      "apiKey": "YOUR_API_KEY",
       "models": [
         {
           "id": "workbuddy/auto",
@@ -189,7 +204,7 @@ Pi 不支持自动拉取模型列表，需要手动编辑 `~/.pi/agent/models.js
 
 ```
 Base URL: http://127.0.0.1:7863/v1
-API Key:  WildWorkAPI
+API Key:  YOUR_API_KEY
 ```
 
 模型 ID 需带渠道前缀：`workbuddy/<model>`、`workbuddyai/<model>`、`traework/<model>`、`traecode/<model>`、`qodercn/<model>`、`qodercom/<model>`、`qwenwork/<model>`、`monkeycode/<model>`、`raccoon/<model>`、`loomy/<model>`、`oczen/<model>`（旧 `qoder/<model>` 仍可用，已从界面下线）。
@@ -200,7 +215,7 @@ API Key:  WildWorkAPI
 
 ```bash
 curl http://127.0.0.1:7863/v1/chat/completions \
-  -H "Authorization: Bearer WildWorkAPI" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_API_KEY" -H "Content-Type: application/json" \
   -d '{"model":"oczen/mimo-v2.6-flash-free","messages":[{"role":"user","content":"你好"}]}'
 ```
 
@@ -262,7 +277,7 @@ env_key = "WILDWORK_KEY"
 
 ```bash
 export ANTHROPIC_BASE_URL="http://127.0.0.1:7863"
-export ANTHROPIC_AUTH_TOKEN="WildWorkAPI"
+export ANTHROPIC_AUTH_TOKEN="YOUR_API_KEY"
 export ANTHROPIC_MODEL="traework/glm-5.2"
 ```
 
@@ -280,7 +295,7 @@ OpenCode Zen 上还有一个免费的结构化决策模型 **Jev（`jev-1.13-fre
 
 ```bash
 curl -X POST "http://127.0.0.1:7863/v1/systemone" \
-  -H "Authorization: Bearer WildWorkAPI" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "state": "用户反馈：我被重复扣费了，订单号 A-104，要求今天退款。",

@@ -11,14 +11,35 @@ func TestDefault(t *testing.T) {
 	if c.Listen.Addr() != "127.0.0.1:7863" {
 		t.Errorf("listen=%s", c.Listen.Addr())
 	}
-	if c.APIKey != "WildWorkAPI" {
-		t.Errorf("api_key=%q", c.APIKey)
+	// APIKey 现在是随机生成的：只断言「非空」与「长度合理」。
+	//
+	// 不能断言具体值 —— 旧测试锁死了一个固定常量，而那个值恰好与开发者
+	// 实际使用中的 key 相同，会随二进制和公开仓库一起泄露。
+	// 随机化后这类断言天然失效，正是要的效果。
+	if c.APIKey == "" {
+		t.Error("api_key 为空：默认配置必须自带一个可用的 key")
+	}
+	if len(c.APIKey) < 20 {
+		t.Errorf("api_key 过短（%d 字符），熵不足", len(c.APIKey))
 	}
 	if err := c.normalize(); err != nil {
 		t.Fatalf("normalize: %v", err)
 	}
 	if c.HardCreditDur.Hours() != 12 {
 		t.Errorf("hard=%v", c.HardCreditDur)
+	}
+}
+
+// TestDefaultAPIKeyRandom 锁定「每个实例的默认 key 不同」——
+// 这是随机化的全部意义所在（固定默认值会随二进制公开）。
+func TestDefaultAPIKeyRandom(t *testing.T) {
+	seen := make(map[string]bool, 100)
+	for i := 0; i < 100; i++ {
+		k := Default().APIKey
+		if seen[k] {
+			t.Fatalf("第 %d 次生成的 key 与之前重复：%q（随机源有问题）", i, k)
+		}
+		seen[k] = true
 	}
 }
 

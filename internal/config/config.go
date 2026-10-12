@@ -3,6 +3,8 @@ package config
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -215,10 +217,20 @@ type Config struct {
 }
 
 // Default 默认配置。
+//
+// APIKey **不设固定默认值**，而是首次生成 config.json 时随机生成：
+//
+//   - 固定默认值意味着任何人拿到二进制就知道默认 key。发布到公开仓库后，
+//     别人 clone 下来不配 config.json 就能直接访问使用者暴露的实例。
+//   - 每个实例随机生成也让「忘记改 key」不再是安全隐患 —— 猜不出来。
+//
+// 随机源用 crypto/rand 而非 math/rand：key 的不可预测性是这里唯一的
+// 要求，math/rand 的线性同余序列可被观察若干输出后反推状态。
+// 生成失败时留空，由 normalize/首次启动的路径补齐（见 genAPIKey）。
 func Default() *Config {
 	c := &Config{
 		Listen:    Listen{Host: "127.0.0.1", Port: 7863},
-		APIKey:    "WildWorkAPI",
+		APIKey:    genAPIKey(),
 		AuthDir:   "./auths",
 		StateFile: "./data/state.json",
 		Region:    "cn",
@@ -240,6 +252,30 @@ func Default() *Config {
 	c.SessionStickyTTL = 30
 	c.SessionStickyGC = 5
 	return c
+}
+
+// genAPIKey 生成随机 API Key（24 字节熵 → base64url 约 32 字符）。
+//
+// 为什么随机而不是固定字符串：
+//
+//	固定默认值会随二进制一起公开。本项目要发布到公开仓库，任何人下载 exe
+//	就知道默认 key —— 若使用者没改（很多人不会改），等于把服务敞开着。
+//	随机生成让「忘了改 key」不再是安全隐患。
+//
+// base64url 而非 hex：同熵下短 1/3（24B → 32 字符 vs 48 字符），
+// 且 URL 安全，可直接放进客户端配置。去掉 '=' 填充避免 JSON 里出现转义困扰。
+//
+// crypto/rand 而非 math/rand：后者是线性同余序列，观察若干输出即可
+// 反推内部状态并预测后续值 —— 对 key 这种「不可预测即可」的场景不可接受。
+func genAPIKey() string {
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		// 极罕见（系统熵源故障）。此处不适合 panic —— 配置生成失败应让
+		// 程序继续启动并由用户自行设置，因此退化为空值；
+		// normalize 会保持它为空，监听非 127.0.0.1 时 main 会提示必须设置。
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(buf)
 }
 
 // Load 从文件读，再用 WILDWORK_* env 覆盖。

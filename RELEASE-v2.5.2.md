@@ -61,7 +61,7 @@ OpenCode Zen 上还有一个免费的结构化决策模型 **Jev（`jev-1.13-fre
 
 ```bash
 curl -X POST "http://127.0.0.1:7863/v1/systemone" \
-  -H "Authorization: Bearer WildWorkAPI" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"state":"...","questions":{"name":{"type":"noul|choice|score","criteria":...}}}'
 ```
