@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 
 REPO = "sddvcm/workbuddy-api"
-TAG = "v0.1.0"
+TAG = "v0.1.1"
 TOKEN_FILE = r"C:\Users\Administrator\Desktop\GitHub API.txt"
 EXE = r"C:\Users\Administrator\workbuddy-api\dist\workbuddy-api.exe"
 
