@@ -149,11 +149,27 @@
     <div class="panel-head">
       <h2>模型列表和费率</h2>
       <button class="btn small" id="btnRefreshFees">刷新</button>
+      <button class="btn small" id="btnExportModels"
+        title="把全部模型（含倍率）写入 WorkBuddy 的自定义模型清单">一键添加自定义</button>
     </div>
     <div id="feesBox" class="fees"></div>
   </section>
 
   <div class="footer">workbuddy-api — 多渠道账号聚合 · 仅供个人学习 · 右键托盘图标退出</div>
+</div>
+
+<!-- 一键添加自定义模型：覆盖确认弹层 -->
+<div class="overlay hidden" id="modelsJsonOverlay">
+  <div class="modal">
+    <div class="modal-title">写入 WorkBuddy 自定义模型清单</div>
+    <div class="modal-body">
+      <div id="mjMsg"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn small" id="btnMjCancel">取消</button>
+      <button class="btn small primary" id="btnMjConfirm">确认写入</button>
+    </div>
+  </div>
 </div>
 
 <!-- 添加账号确认弹层 -->

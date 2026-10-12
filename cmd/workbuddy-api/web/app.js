@@ -121,6 +121,74 @@ async function refreshFees() {
   }
 }
 
+// ---- 一键添加自定义模型（写入 WorkBuddy 的 models.json）----
+//
+// 写入是**整体覆盖**用户的自定义清单，故必须先预览（拿真实的「会覆盖多少条」），
+// 再由用户确认；后端也要求显式 confirm=true 才落盘。
+let mjPreview = null;
+
+// exportModelsJson 预览 → 弹覆盖警告 → 用户确认后写入。
+async function exportModelsJson() {
+  let pv;
+  try {
+    pv = await api("/api/fees/models_json");
+  } catch (e) { toast(e.message); return; }
+
+  if (!pv.api_key_set) {
+    toast("未设置 API Key，无法写入自定义模型");
+    return;
+  }
+  if (!pv.will_write) {
+    toast("没有可写入的模型：请先点「刷新」获取倍率数据");
+    return;
+  }
+  mjPreview = pv;
+  $("mjMsg").innerHTML = modelsJsonConfirmHTML(pv);
+  $("modelsJsonOverlay").classList.remove("hidden");
+}
+
+// modelsJsonConfirmHTML 组装确认文案。覆盖与新建两种情形的措辞完全不同 ——
+// 「会覆盖你 N 条自定义模型」必须显式说出来，不能含糊成「将更新」。
+function modelsJsonConfirmHTML(pv) {
+  const rows = [];
+  rows.push(`<div class="glm-warn">
+    <div class="glm-warn-title">⚠️ ${pv.exists ? "这会覆盖已有的自定义模型清单" : "即将新建自定义模型清单"}</div>
+    <ol>
+      ${pv.exists
+        ? `<li>目标文件已存在，其中 <b>${pv.existing_count}</b> 条自定义模型将被<b>整体覆盖</b>。</li>`
+        : "<li>目标文件不存在，将新建。</li>"}
+      <li>写入前会自动备份为 <code>models.json.bak-时间戳</code>（同目录），但仍建议你自己先备份一份。</li>
+      <li>写入后需在 WorkBuddy 里<b>重启或刷新</b>模型列表才会看到。</li>
+    </ol>
+  </div>`);
+  rows.push(`<div class="hint" style="margin-top:0">
+    将写入 <b>${pv.will_write}</b> 个模型${pv.skipped ? `（另有 ${pv.skipped} 个无倍率模型不写入）` : ""}<br>
+    文件：<code>${esc(pv.path)}</code><br>
+    端点：<code>${esc(pv.endpoint)}</code>
+  </div>`);
+  return rows.join("");
+}
+
+// confirmModelsJson 确认写入（后端同样要求 confirm=true，双保险）。
+async function confirmModelsJson() {
+  if (!mjPreview) { closeModelsJson(); return; }
+  $("btnMjConfirm").disabled = true;
+  try {
+    const r = await api("/api/fees/models_json", { confirm: true });
+    closeModelsJson();
+    toast(r.note || `已写入 ${r.count} 条自定义模型`);
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    $("btnMjConfirm").disabled = false;
+  }
+}
+
+function closeModelsJson() {
+  mjPreview = null;
+  $("modelsJsonOverlay").classList.add("hidden");
+}
+
 // ---------- 积分明细 tooltip ----------
 // 明细条数可能很多（TraeWork 每个签到奖励都是独立条目，常见 30+），
 // 故分页展示：每页 DETAIL_PAGE_SIZE 条，页码状态存在 detailState 里，
@@ -658,15 +726,19 @@ function renderFees(fees) {
   };
 
   // 模型标识单元格：模型名 + 上下文/能力/促销标记。
-  // 模型名做成可点击复制（复制完整「渠道/模型」，如 workbuddy/glm-4.6），
-  // 方便直接粘进客户端配置。data-mid 存完整标识供事件委托读取；
-  // 保留原有 title（模型详情）并在其后追加一行复制提示。
+  // 模型名可点击复制。复制内容 = **带倍率后缀**的完整标识（如
+  // `workbuddy/glm-5.3-flash (0.06x)`）—— 后端路由会剥掉后缀，所以粘到客户端
+  // 仍能正常请求，而用户在客户端里能看到「这个烧多少积分」。
+  // 无倍率（上游未返回定价）的模型复制裸名，不用 0 冒充。
+  // data-mid 存复制内容供事件委托读取；data-plain 存裸名（显示/tooltip 用）。
   const modelIdCell = (m, kind) => {
     if (!m) return "";
-    const mid = `${kind}/${m.model}`;
-    const copyTip = `点击复制：${mid}`;
+    const plain = `${kind}/${m.model}`;
+    // 有明确倍率才加后缀；free(0.00) 也要显示 —— 用户需要知道「这个免费」。
+    const copy = m.priced ? plain + ` (${m.rate.toFixed(2)}x)` : plain;
+    const copyTip = `点击复制：${copy}`;
     const title = `${modelTip(m)}\n${copyTip}`;
-    return `<code class="fee-model-copy" data-mid="${esc(mid)}" role="button" tabindex="0" title="${esc(title)}">${esc(m.model)}</code>`
+    return `<code class="fee-model-copy" data-mid="${esc(copy)}" data-plain="${esc(plain)}" role="button" tabindex="0" title="${esc(title)}">${esc(m.model)}</code>`
       + `${ctxTag(m)}${capIcons(m)}${noteCell(m)}`;
   };
 
@@ -1643,6 +1715,10 @@ function bind() {
   $("btnCopyUrl").onclick = copyUrl;
   $("btnCancelLogin").onclick = cancelLogin;
   $("btnRefreshFees").onclick = refreshFees;
+  $("btnExportModels").onclick = exportModelsJson;
+  $("btnMjConfirm").onclick = confirmModelsJson;
+  $("btnMjCancel").onclick = closeModelsJson;
+  $("modelsJsonOverlay").onclick = (e) => { if (e.target === $("modelsJsonOverlay")) closeModelsJson(); };
   $("chkAutostart").onchange = toggleAutostart;
   $("selStrategy").onchange = syncStrategyDesc;
   $("btnAdminLogout").onclick = () => logout();

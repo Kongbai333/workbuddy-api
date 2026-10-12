@@ -2510,6 +2510,8 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		writeJSON(w, http.StatusOK, a.FeesInfo())
 		go a.safeGo(func() { a.RefreshPricing() })
 	})
+	// 一键写入 WorkBuddy 自定义模型清单（预览 + 确认写入两步，见 workbuddy_models_json_api.go）
+	a.registerModelsJSONRoutes(mux)
 	mux.HandleFunc("GET /api/usage", func(w http.ResponseWriter, r *http.Request) {
 		if a.ledger == nil {
 			writeJSON(w, http.StatusOK, map[string]any{"disabled": true})

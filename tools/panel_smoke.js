@@ -65,6 +65,18 @@ const BROWSER = process.env.PANEL_BROWSER ||
       ? document.getElementById('selStrategy').value : 'missing',
     strategyDesc: (document.getElementById('strategyDesc') || {}).textContent || '',
     strategyBound: !!document.getElementById('selStrategy').onchange,
+    // 费率表：点击复制必须带倍率后缀（data-mid 存的是复制内容）
+    copySample: (() => {
+      const el = document.querySelector('#feesBox code.fee-model-copy[data-mid*="x)"]');
+      return el ? el.dataset.mid : 'missing';
+    })(),
+    // 有倍率的模型才带后缀；无倍率（unknown）复制裸名
+    copyNoRate: (() => {
+      const els = [...document.querySelectorAll('#feesBox code.fee-model-copy')];
+      const el = els.find(e => !/x\)$/.test(e.dataset.mid));
+      return el ? el.dataset.mid : '(全部带倍率)';
+    })(),
+    exportBtnBound: !!document.getElementById('btnExportModels').onclick,
   }));
 
   await browser.close();
@@ -93,6 +105,10 @@ const BROWSER = process.env.PANEL_BROWSER ||
   }
   if (!info.strategyDesc) bad.push('挑号策略说明文案为空');
   if (!info.strategyBound) bad.push('挑号策略下拉未绑定 onchange（说明文案不会随选择更新）');
+  if (info.copySample === 'missing' || !/\(\d+\.\d+x\)$/.test(info.copySample)) {
+    bad.push('费率表复制内容未带倍率后缀，实际：' + info.copySample);
+  }
+  if (!info.exportBtnBound) bad.push('「一键添加自定义」按钮未绑定');
 
   if (bad.length) {
     console.log('\n❌ 失败：' + bad.join('；'));
@@ -100,7 +116,10 @@ const BROWSER = process.env.PANEL_BROWSER ||
   }
   console.log('\n✅ 通过：账号卡片 ' + info.cards + ' 张，一键做任务可用，★ 入口 ' +
     info.starBtns + ' 个，挑号策略 ' + info.strategyValue +
-    '（' + info.strategyOptions + ' 项），无控制台错误');
+    '（' + info.strategyOptions + ' 项）');
+  console.log('   复制带倍率：' + info.copySample);
+  console.log('   无倍率复制：' + info.copyNoRate);
+  console.log('   无控制台错误');
 })().catch((e) => {
   console.error('❌ 脚本执行失败：', e && e.message ? e.message : e);
   process.exit(2);
