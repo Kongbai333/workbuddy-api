@@ -2713,6 +2713,30 @@ func buildFeesChannels(modelsByKind map[provider.Kind][]provider.ModelInfo,
 	return out
 }
 
+// ModelRate 查询某渠道某模型的积分倍率（/v1/models 附加倍率后缀用）。
+//
+// 返回的 explicit=false 表示上游未返回该模型的倍率 —— 调用方据此不加后缀，
+// 绝不用 0 或猜测值冒充倍率（费率表里对应显示 unknown）。
+//
+// 匹配口径与 FeesInfo 一致：渠道名（provider.Kind.String()）+ 模型名精确匹配，
+// 保证「面板显示的倍率」与「/v1/models 里的倍率」永远是同一个值。
+func (a *App) ModelRate(kind provider.Kind, model string) (float64, bool) {
+	a.pricingMu.Lock()
+	cached := a.pricingCache
+	a.pricingMu.Unlock()
+
+	ch := kind.String()
+	for _, p := range cached {
+		if p.Channel == ch && p.Model == model {
+			if !p.IsExplicit() {
+				return 0, false
+			}
+			return p.Rate, true
+		}
+	}
+	return 0, false
+}
+
 // FeesInfo 返回「模型列表和费率」面板数据。
 // 以各渠道当前生效的模型列表为基准（与 /v1/models 同源），逐行配上费率：
 // 上游未返回倍率的模型标记 priced=false，前端显示 unknown。

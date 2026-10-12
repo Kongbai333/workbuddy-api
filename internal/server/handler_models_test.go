@@ -15,7 +15,7 @@ func TestModelEntryContract(t *testing.T) {
 		ID: "vision-model", Name: "Vision", ContextWindow: 128000, MaxTokens: 8192,
 		ContextFromAPI: true, SupportsImages: true,
 	}
-	entry := buildModelEntry(provider.WorkBuddyAI, mi)
+	entry := (&Handler{}).buildModelEntry(provider.WorkBuddyAI, mi)
 
 	// OpenAI 官方规定字段
 	for _, k := range []string{"id", "object", "created", "owned_by"} {
@@ -59,7 +59,7 @@ func TestModelEntryContract(t *testing.T) {
 // TestModelEntryTextOnly 不支持图像的模型只声明 text 模态。
 func TestModelEntryTextOnly(t *testing.T) {
 	mi := provider.ModelInfo{ID: "text-model", ContextWindow: 1000}
-	entry := buildModelEntry(provider.WorkBuddy, mi)
+	entry := (&Handler{}).buildModelEntry(provider.WorkBuddy, mi)
 
 	arch, _ := entry["architecture"].(map[string]any)
 	mods, ok := arch["input_modalities"].([]string)

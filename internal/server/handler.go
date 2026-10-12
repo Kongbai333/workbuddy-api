@@ -52,10 +52,20 @@ type Runtime struct {
 	lastFail time.Time
 }
 
+// ModelRateLookup 查询某渠道某模型的倍率（由 app 层注入，读取 pricingCache）。
+//
+// 形如 func(kind provider.Kind, model string) (rate float64, explicit bool)。
+// nil 时 /v1/models 不附加倍率后缀（纯裸 id），行为与本特性引入前一致。
+type ModelRateLookup func(kind provider.Kind, model string) (float64, bool)
+
 // Config handler 依赖。
 type Config struct {
 	Runtimes map[provider.Kind]*Runtime
 	APIKey   string // 空 = 不鉴权
+
+	// ModelRate 为倍率查询钩子（供 /v1/models 生成带倍率后缀的模型 id）。
+	// nil = 不加后缀，见 ModelRateLookup 的说明。
+	ModelRate ModelRateLookup
 
 	// WebUI 为内嵌的静态 Web UI 文件系统（go:embed 产物）；非 nil 时挂载到 /
 	WebUI fs.FS
@@ -337,7 +347,7 @@ func (h *Handler) modelList() []map[string]any {
 			infos = rt.StaticModels
 		}
 		for _, mi := range infos {
-			out = append(out, buildModelEntry(k, mi))
+			out = append(out, h.buildModelEntry(k, mi))
 		}
 	}
 	return out
@@ -347,9 +357,27 @@ func (h *Handler) modelList() []map[string]any {
 // OpenAI 官方仅规定 id/object/created/owned_by，未定义能力字段；
 // 多模态能力按 OpenRouter / llama.cpp 通行的 architecture.input_modalities 透传。
 // 上游模型列表接口未返回能力信息时，按惯例回退为 ["text"]。
-func buildModelEntry(k provider.Kind, mi provider.ModelInfo) map[string]any {
-	id := k.String() + "/" + mi.ID
-	entry := map[string]any{"id": id, "object": "model", "created": 1753600000, "owned_by": k.String()}
+//
+// **id 会带倍率后缀**（`workbuddy/hy3 (0.06x)`），让用户在客户端的模型下拉框里
+// 就能看出烧不烧积分。原始模型名单独放在 upstream_id 字段，供程序化消费方取用；
+// 路由侧（runtimeForModel）会把后缀剥掉，所以直接粘贴 id 也能正常请求。
+func (h *Handler) buildModelEntry(k provider.Kind, mi provider.ModelInfo) map[string]any {
+	upstreamID := k.String() + "/" + mi.ID
+	id := upstreamID
+	entry := map[string]any{
+		"id": id, "object": "model", "created": 1753600000, "owned_by": k.String(),
+		// upstream_id 是不带后缀的原始标识；客户端一般用不到，
+		// 但程序化消费方（自己做倍率匹配/去重）需要它。
+		"upstream_id": upstreamID,
+	}
+	if h.cfg.ModelRate != nil {
+		if rate, explicit := h.cfg.ModelRate(k, mi.ID); explicit {
+			id += provider.RateSuffixFormat(rate, true)
+			entry["id"] = id
+			// credit_rate 把倍率单独给一份，消费方不必去解析 id 里的字符串。
+			entry["credit_rate"] = rate
+		}
+	}
 	if mi.ContextWindow > 0 {
 		entry["context_length"] = mi.ContextWindow
 	}
@@ -781,8 +809,19 @@ func formatUnfreeze(t time.Time) string {
 	return t.Format("2006-01-02 15:04")
 }
 
+// runtimeForModel 解析 `channel/model`，返回运行时与**去掉倍率后缀**的模型名。
+//
+// 用户从客户端模型下拉框里复制的是带倍率的名字（`workbuddy/hy3 (0.06x)`），
+// 那是 /v1/models 下发的形态（见 provider/modelsuffix.go）。这里必须剥掉后缀，
+// 否则用户把名字直接粘进客户端配置就会一直 400。
+//
+// 幂等：裸模型名（`workbuddy/hy3`）原样通过，老配置不受影响。
 func (h *Handler) runtimeForModel(model string) (*Runtime, string, error) {
-	parts := strings.SplitN(strings.TrimSpace(model), "/", 2)
+	// 后缀只可能出现在**最后一段**（channel/ 前缀在 "/" 前，不含 ")"），
+	// 故整体剥除即可。
+	raw := strings.TrimSpace(model)
+	bare, _ := provider.StripRateSuffix(raw)
+	parts := strings.SplitN(bare, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return nil, "", fmt.Errorf("model must use explicit prefix: workbuddy/<model> / workbuddyai/<model> / traework/<model> / qoder/<model> / qodercn/<model> / qodercom/<model> / qwenwork/<model> / glm/<model>")
 	}

@@ -473,6 +473,7 @@ func main() {
 	inner := server.NewHandler(server.Config{
 		Runtimes:     runtimes,
 		APIKey:       cfg.APIKey,
+		ModelRate:    appInst.ModelRate,
 		Ledger:       appInst.Ledger(),
 		Stats:        appInst.Stats(), // 转发路径插桩 AddUsage/AddRequestRow（运行统计）
 		HardCooldown: cfg.HardCreditDur,

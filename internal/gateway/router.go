@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"workbuddy-api/internal/provider"
 )
 
 // Router 模型名解析规则。零值 Router 仅接受带前缀的模型名。
@@ -20,41 +22,67 @@ type Router struct {
 }
 
 // Resolve 解析模型名，返回 "channel/model"。返回的 model 值可能带前缀，调用方勿再重复拼接。
+//
+// **倍率后缀在查表之前剥离**（见 provider.StripRateSuffix）：/v1/models 下发的名字
+// 带 ` (0.06x)`，用户粘回来若不剥，`Map["glm (0.06x)"]` 查不到 → 静默落到兜底渠道，
+// 把本该走 qodercn 的请求发到 workbuddy。这是「静默走错渠道」型故障，最难查。
+//
+// 剥离后重新把后缀贴回返回值，调用方（server.runtimeForModel）仍会再剥一次，
+// 幂等，无需关心。
 func (rt *Router) Resolve(model string) (string, error) {
 	m := strings.TrimSpace(model)
 	if m == "" {
 		return "", fmt.Errorf("model is required")
 	}
 
+	// 剥倍率后缀（没有则原样返回）。后缀只会出现在最后一段，
+	// 故在拆 channel 前缀之前整体剥除即可。
+	suffix := ""
+	if bare, had := provider.StripRateSuffix(m); had {
+		m = bare
+		suffix = provider.RateSuffixFormat(mustRate(model), true)
+	}
+
 	// 已带前缀：前缀必须是已知渠道
 	if i := strings.Index(m, "/"); i > 0 {
 		prefix, rest := m[:i], m[i+1:]
 		if rest == "" {
-			return "", fmt.Errorf("model %q has empty name after channel prefix", m)
+			return "", fmt.Errorf("model %q has empty name after channel prefix", model)
 		}
 		if rt.isChannel(prefix) {
-			return m, nil
+			return m + suffix, nil
 		}
 		return "", fmt.Errorf("unknown channel %q in model %q; known channels: %s",
-			prefix, m, strings.Join(rt.Channels, ", "))
+			prefix, model, strings.Join(rt.Channels, ", "))
 	}
 
-	// model_map 精确匹配
+	// model_map 精确匹配（用剥离后缀的名字查表）
 	if v := strings.TrimSpace(rt.Map[m]); v != "" {
-		return rt.resolveMapped(m, v)
+		target, err := rt.resolveMapped(m, v)
+		return target + suffix, err
 	}
 	// model_map 通配匹配（key 以 * 结尾，取最长匹配 key 以提升确定性）
 	if wildcard := rt.longestWildcardKey(m); wildcard != "" {
-		return rt.resolveMapped(m, strings.TrimSpace(rt.Map[wildcard]))
+		target, err := rt.resolveMapped(m, strings.TrimSpace(rt.Map[wildcard]))
+		return target + suffix, err
 	}
 
 	// 兜底渠道
 	if rt.Default != "" {
-		return rt.Default + "/" + m, nil
+		return rt.Default + "/" + m + suffix, nil
 	}
 	return "", fmt.Errorf("model %q needs an explicit channel prefix (e.g. %s/%s); "+
 		"or set compat.default_channel / compat.model_map in config.json",
-		m, firstOr(rt.Channels, "workbuddy"), m)
+		model, firstOr(rt.Channels, "workbuddy"), m)
+}
+
+// mustRate 从已确认带后缀的名字里取倍率。StripRateSuffix 与 RateOfModel 的判定
+// 条件完全一致，故 ok 必为 true；取不到时按 0 处理（宁可后缀写 0.00 也不能丢后缀）。
+func mustRate(model string) float64 {
+	if r, ok := provider.RateOfModel(model); ok {
+		return r
+	}
+	return 0
 }
 
 // resolveMapped 校验映射目标：必须带已知渠道前缀，否则视为配置错误。
