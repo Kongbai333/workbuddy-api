@@ -148,9 +148,13 @@
   <section class="panel">
     <div class="panel-head">
       <h2>模型列表和费率</h2>
-      <button class="btn small" id="btnRefreshFees">刷新</button>
-      <button class="btn small" id="btnExportModels"
-        title="把全部模型（含倍率）写入 WorkBuddy 的自定义模型清单">一键添加自定义</button>
+      <!-- 两个按钮必须包在同一个 group 里：panel-head 是 space-between，
+           多个按钮各自为子元素时会被推到左右两端（中间大片空白）。 -->
+      <div class="head-btns">
+        <button class="btn small" id="btnRefreshFees">刷新</button>
+        <button class="btn small" id="btnExportModels"
+          title="把全部模型（含倍率）写入 WorkBuddy 的自定义模型清单">一键添加自定义</button>
+      </div>
     </div>
     <div id="feesBox" class="fees"></div>
   </section>

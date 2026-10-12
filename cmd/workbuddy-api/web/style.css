@@ -62,6 +62,10 @@ body {
 .panel { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 16px; box-shadow: var(--shadow); }
 .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
 .panel-head h2 { font-size: 16px; font-weight: 600; }
+/* 标题右侧的按钮组：panel-head 是 space-between，多个按钮各自作为子元素会被
+   推到左右两端（中间留出大片空白，看着像两个不相干的按钮）。包一层 group
+   即可让它们紧挨着排在右侧。 */
+.head-btns { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 /* 账号管理按钮区：外层 wrap 分三段 —— 左组(刷新/签到) + 弹性空白 + 右组(渠道三列 grid)。
    左组整体靠左、右组整体靠右，中间空白自动伸缩；左组窄时 wrap 换行不溢出。 */
