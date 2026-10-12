@@ -12,10 +12,12 @@ package gateway
 import (
 	"encoding/json"
 	"log"
-	"sync"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
+
+	"workbuddy-api/internal/httpauth"
 )
 
 // Config 兼容层配置。
@@ -135,18 +137,17 @@ func (g *Gateway) withAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if strings.TrimSpace(token) != key {
-			if strings.TrimSpace(r.Header.Get("x-api-key")) != key {
-				// 错误体形状按协议区分：Anthropic 客户端只认 {"type":"error",...}
-				if strings.Contains(r.URL.Path, "/messages") {
-					writeAnthropicError(w, http.StatusUnauthorized, "authentication_error",
-						"invalid x-api-key or Authorization header")
-				} else {
-					writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key",
-						"missing or invalid API key")
-				}
-				return
+		if !httpauth.Equal(strings.TrimSpace(token), key) &&
+			!httpauth.Equal(strings.TrimSpace(r.Header.Get("x-api-key")), key) {
+			// 错误体形状按协议区分：Anthropic 客户端只认 {"type":"error",...}
+			if strings.Contains(r.URL.Path, "/messages") {
+				writeAnthropicError(w, http.StatusUnauthorized, "authentication_error",
+					"invalid x-api-key or Authorization header")
+			} else {
+				writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key",
+					"missing or invalid API key")
 			}
+			return
 		}
 		next(w, r)
 	}

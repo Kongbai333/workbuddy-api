@@ -8,6 +8,7 @@
   "auth_dir": "./auths",
   "state_file": "./data/state.json",
   "region": "cn",
+  "session_sticky": true,
   "strategy": "expire",
   "cooldown": {
     "hard_credit": "12h",

@@ -116,6 +116,21 @@ type Config struct {
 	// 空串视为 expire。非法值在 normalize 时报错（面板只给三个合法选项）。
 	Strategy string `json:"strategy,omitempty"`
 
+	// ---- 会话粘性 ----
+	//
+	// SessionSticky 开启「按会话绑定账号」：同一 conversationId 恒定走同一账号。
+	// 目的：上游 prompt 缓存命中（同一会话省缓存读取），且多轮对话里上下文里的
+	// 工具调用 ID / assistant offset 跨轮对得上。
+	//
+	// 默认**开启**：客户端不发会话 id 时自动退化为「只有请求计数粘性」的旧行为，
+	// 即最差情况等于没开，不存在退化风险。
+	SessionSticky bool `json:"session_sticky"`
+	// SessionStickyTTL 会话绑定有效期（分钟）。过期后重新分配，
+	// 让长时间空闲的账号有机会被其它会话用上。默认 30，下限 1。
+	SessionStickyTTL int `json:"session_sticky_ttl,omitempty"`
+	// SessionStickyGC 后台清理间隔（分钟）。默认 5，下限 1。
+	SessionStickyGC int `json:"session_sticky_gc,omitempty"`
+
 	Cooldown struct {
 		HardCredit  string `json:"hard_credit"`   // "12h"
 		SoftRate    string `json:"soft_rate"`     // "60s"
@@ -194,6 +209,9 @@ type Config struct {
 	ErrCooldownDur time.Duration `json:"-"`
 	// ExpiringThresholdDur 临期阈值解析结果（normalize 里钳到 >= 24h）。
 	ExpiringThresholdDur time.Duration `json:"-"`
+	// SessionStickyTTLDur / SessionStickyGCDur 会话粘性的时间参数（解析后）。
+	SessionStickyTTLDur time.Duration `json:"-"`
+	SessionStickyGCDur  time.Duration `json:"-"`
 }
 
 // Default 默认配置。
@@ -218,6 +236,9 @@ func Default() *Config {
 	c.Compat.DefaultChannel = "workbuddy"
 	c.Compat.MaxTokensCap = 32000
 	c.Proxies = map[string]string{}
+	c.SessionSticky = true
+	c.SessionStickyTTL = 30
+	c.SessionStickyGC = 5
 	return c
 }
 
@@ -457,6 +478,21 @@ func (c *Config) normalize() error {
 	default:
 		return fmt.Errorf("strategy must be one of expire/credits/roundrobin, got %q", c.Strategy)
 	}
+	// 会话粘性时间参数：钳到下限 1 分钟（0 或负数视为未配置 → 落默认）。
+	if c.SessionStickyTTL <= 0 {
+		c.SessionStickyTTL = 30
+	}
+	if c.SessionStickyTTL < 1 {
+		c.SessionStickyTTL = 1
+	}
+	if c.SessionStickyGC <= 0 {
+		c.SessionStickyGC = 5
+	}
+	if c.SessionStickyGC < 1 {
+		c.SessionStickyGC = 1
+	}
+	c.SessionStickyTTLDur = time.Duration(c.SessionStickyTTL) * time.Minute
+	c.SessionStickyGCDur = time.Duration(c.SessionStickyGC) * time.Minute
 	// 兼容旧版 checkin_hours；新版本统一规范化为 HH:MM。
 	if len(c.Schedule.CheckinTimes) == 0 {
 		c.Schedule.CheckinTimes = make([]string, 0, len(c.Schedule.CheckinHours))

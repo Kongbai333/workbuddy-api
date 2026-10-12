@@ -471,17 +471,23 @@ func main() {
 		fatal("embed web: %v", err)
 	}
 	inner := server.NewHandler(server.Config{
-		Runtimes:     runtimes,
-		APIKey:       cfg.APIKey,
-		ModelRate:    appInst.ModelRate,
-		Ledger:       appInst.Ledger(),
-		Stats:        appInst.Stats(), // 转发路径插桩 AddUsage/AddRequestRow（运行统计）
-		HardCooldown: cfg.HardCreditDur,
-		SoftCooldown: cfg.SoftRateDur,
-		ErrThreshold: cfg.Cooldown.ErrThresh,
-		ErrCooldown:  cfg.ErrCooldownDur,
-		WebUI:        sub,
-		AttachAPI:    appInst.HandleAPI,
+		Runtimes:  runtimes,
+		APIKey:    cfg.APIKey,
+		ModelRate: appInst.ModelRate,
+		Ledger:    appInst.Ledger(),
+		// 会话粘性：同一 conversationId 恒定走同一账号 → 上游 prompt 缓存命中，
+		// 且上下文里的工具调用 ID / assistant offset 跨轮对得上。
+		// 客户端不发会话 id 时自动退化为「只有请求计数粘性」的旧行为。
+		SessionEnabled:    cfg.SessionSticky,
+		SessionTTL:        cfg.SessionStickyTTLDur,
+		SessionGCInterval: cfg.SessionStickyGCDur,
+		Stats:             appInst.Stats(), // 转发路径插桩 AddUsage/AddRequestRow（运行统计）
+		HardCooldown:      cfg.HardCreditDur,
+		SoftCooldown:      cfg.SoftRateDur,
+		ErrThreshold:      cfg.Cooldown.ErrThresh,
+		ErrCooldown:       cfg.ErrCooldownDur,
+		WebUI:             sub,
+		AttachAPI:         appInst.HandleAPI,
 	})
 
 	// 两层结构：外层兼容层只接管三个新端点，其余（含 /v1/chat/completions、Web UI、
@@ -576,6 +582,22 @@ func main() {
 	// 运行统计喂入器（账号状态差值/粘性路由/今日作废，30s 一轮）：
 	// 进程内直调各数据源，面板「运行统计」tab 即时可用。
 	appInst.StartStatsFeeders(sctx)
+
+	// 会话粘性的后台 TTL 清理。
+	//
+	// 为什么必须显式 Start：Router 的 GC 是 goroutine，不启动的话过期绑定永远滞留，
+	// 分配时「空闲账号」集合会越来越小，最终退化成全池哈希（空闲号再也用不上）。
+	// 关停由 sctx 取消 → StopGC 幂等，进程退出时自然结束。
+	inner.StartSessionGC()
+	// 与 sctx 一起收口：所有关停路径都经过 stop()（含 defer 与各信号分支），
+	// 故 GC goroutine 不会在 handler 已不可用后仍空转。
+	go func() {
+		<-sctx.Done()
+		inner.StopSessionGC()
+	}()
+	if cfg.SessionSticky {
+		log.Printf("会话粘性已开启：同一会话绑定有效期 %s，清理间隔 %s", cfg.SessionStickyTTLDur, cfg.SessionStickyGCDur)
+	}
 
 	// 启动提示（非 --autostart）：系统通知
 	if !autostart && !noTray {

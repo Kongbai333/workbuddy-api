@@ -15,9 +15,11 @@ import (
 	"time"
 
 	"workbuddy-api/internal/auth"
+	"workbuddy-api/internal/httpauth"
 	"workbuddy-api/internal/ledger"
 	"workbuddy-api/internal/pool"
 	"workbuddy-api/internal/provider"
+	"workbuddy-api/internal/session"
 	// 别名 statsEngine：与运行统计引擎包名一致（本包无同名局部变量，别名仅为与 app 包对齐可读）
 	statsEngine "workbuddy-api/internal/stats"
 )
@@ -88,6 +90,14 @@ type Config struct {
 	ErrThreshold int
 	ErrCooldown  time.Duration
 	RefreshSkew  time.Duration
+
+	// SessionEnabled 开启「会话粘性」：按 conversationId 把同一段对话绑定到同一账号。
+	// false（默认）= 保持只有请求计数粘性的旧行为。
+	SessionEnabled bool
+	// SessionTTL 会话绑定有效期（非正取默认 30m）。
+	SessionTTL time.Duration
+	// SessionGCInterval 后台清理间隔（非正取默认 5m）。
+	SessionGCInterval time.Duration
 }
 
 // stickyEntry 粘性路由记录：记录上次路由账号及连续使用次数。
@@ -109,7 +119,15 @@ type Handler struct {
 
 	apiMu    sync.RWMutex // 保护 cfg.APIKey（面板可运行时修改）
 	stickyMu sync.RWMutex
-	sticky   map[string]*stickyEntry // runtimeKind → stickyEntry
+
+	// sessions 会话粘性路由（按 conversation 绑定账号）。nil = 不启用，
+	// 此时行为与引入前完全一致（只有请求计数粘性）。
+	sessions *session.Router
+
+	// wafIP WAF IP 级拦截状态机（零值可用，见 wafip.go）。
+	// 进程内状态、重启清零（窗口 60s，重建成本极低）。
+	wafIP  wafIPGate
+	sticky map[string]*stickyEntry // runtimeKind → stickyEntry
 }
 
 func NewHandler(cfg Config) *Handler {
@@ -137,6 +155,16 @@ func NewHandler(cfg Config) *Handler {
 		cfg.RefreshSkew = 10 * time.Minute
 	}
 	h := &Handler{cfg: cfg, mux: http.NewServeMux(), sticky: make(map[string]*stickyEntry), ledger: cfg.Ledger, stats: cfg.Stats}
+	if cfg.SessionEnabled {
+		h.sessions = session.New(session.Config{
+			TTL:        cfg.SessionTTL,
+			GCInterval: cfg.SessionGCInterval,
+			// 可用账号**按渠道**取：会话键已带渠道前缀，这里按前缀还原出渠道，
+			// 避免给 A 渠道的会话分配到 B 渠道的账号（那个 uid 在 A 池里不存在）。
+			Available:         func(ch string) []string { return h.healthyUIDs(ch, "") },
+			AvailableForModel: func(ch, model string) []string { return h.healthyUIDs(ch, model) },
+		})
+	}
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
@@ -169,11 +197,17 @@ func (h *Handler) stickyKey(kind provider.Kind) string { return kind.String() }
 //
 // 任一条件触发则降级为 PickForModel(model) 选新账号并重置粘性记录。
 //
+// ## 优先级：会话粘性 > 请求计数粘性
+//
+// 会话粘性（internal/session）按 conversation 绑定，粒度更细也更符合用户预期：
+// 同一段对话恒定走同一号 → 上游 prompt 缓存命中、上下文里的工具调用 ID 对得上。
+// 请求计数粘性是**兜底**（客户端不发会话 id 时的退化路径）：它只认「连续 50 次」，
+// 看不到会话边界，新对话可能半路换号。
+//
 // ## 负载均衡策略下必须旁粘性
 //
-// 粘性会把同一账号连用 50 次，而 roundrobin 的诉求恰恰是「每次都换一个」。
-// 两者叠加会让 roundrobin 看起来完全没生效（连续 50 个请求仍打同一个号）。
-// 故选中 roundrobin 时直接跳过粘性层，每次请求都真正轮转。
+// 粘性会把同一账号长期钉住，而 roundrobin 的诉求恰恰是「每次都换一个」。
+// 两者叠加会让 roundrobin 看起来完全没生效。故选中 roundrobin 时直接跳过全部粘性层。
 func (h *Handler) pickWithSticky(rt *Runtime, model string) *auth.Auth {
 	const defaultMaxReqs = 50
 
@@ -213,6 +247,110 @@ func (h *Handler) pickWithSticky(rt *Runtime, model string) *auth.Auth {
 	h.stickyMu.Unlock()
 	log.Printf("new sticky route platform=%s uid=%s maxReqs=%d", rt.Kind, acct.UID, defaultMaxReqs)
 	return acct
+}
+
+// healthyUIDs 某渠道下可用（healthy 且对该模型未冷却）的账号 uid 列表。
+// model 为空表示不按模型过滤。渠道名未知时返回空。
+func (h *Handler) healthyUIDs(channel, model string) []string {
+	rt := h.cfg.Runtimes[provider.Kind(channel)]
+	if rt == nil || rt.Pool == nil {
+		return nil
+	}
+	var out []string
+	for _, st := range rt.Pool.List() {
+		if st.Disabled || st.Cooling {
+			continue
+		}
+		if model != "" && st.ModelCooling != nil {
+			if t, ok := st.ModelCooling[model]; ok && time.Now().Before(t) {
+				continue
+			}
+		}
+		out = append(out, st.UID)
+	}
+	return out
+}
+
+// sessionPick 会话粘性：按会话 key 选定账号。返回 nil 表示无会话键或无可用账号，
+// 由调用方回落到请求计数粘性 / 普通轮换。
+//
+// 会话路由优先于计数粘性：粒度更细（同对话恒定同号，上游 prompt 缓存能命中）。
+func (h *Handler) sessionPick(rt *Runtime, model, sessKey string) *auth.Auth {
+	if h.sessions == nil || sessKey == "" {
+		return nil
+	}
+	scope := h.sessionScope(rt.Kind, sessKey)
+	uid, ok := h.sessions.ResolveForModel(rt.Kind.String(), scope, model)
+	if !ok {
+		return nil
+	}
+	acct := rt.Pool.AuthByUID(uid)
+	if acct == nil {
+		// 账号已从池中消失：解绑，让该会话重新分配。
+		h.sessions.Unbind(scope)
+		return nil
+	}
+	// 会话粘性命中/分配都要留痕：它决定「哪段对话用哪个号」，
+	// 出问题时（上下文串号、上游缓存 miss）这是唯一可查的线索。
+	// 键只打前 8 位避免日志过长（完整 uid 可从 data/state.json 查）。
+	log.Printf("session route platform=%s uid=%s sess=%s model=%s",
+		rt.Kind, shortUID(uid), shortUID(sessKey), model)
+	return acct
+}
+
+// shortUID 截 uid 前 8 位（日志用；全量 uid 可从 data/state.json 查）。
+func shortUID(s string) string {
+	if len(s) <= 8 {
+		return s
+	}
+	return s[:8]
+}
+
+// sessionBind 把会话重绑到**实际成功**的账号。
+//
+// 为什么需要：双段哈希只是启发式分配，可能挑到随后失败/被限流的号。
+// 真实结果才是权威 —— 绑定到最终成功的号，让多轮对话收敛到「对该会话持续成功」的号。
+func (h *Handler) sessionBind(rt *Runtime, sessKey string, a *auth.Auth) {
+	if h.sessions == nil || sessKey == "" || a == nil {
+		return
+	}
+	h.sessions.Bind(h.sessionScope(rt.Kind, sessKey), a.UID)
+}
+
+// sessionUnbind 会话失败时解绑（下次重新分配）。
+func (h *Handler) sessionUnbind(rt *Runtime, sessKey string) {
+	if h.sessions == nil || sessKey == "" {
+		return
+	}
+	h.sessions.Unbind(h.sessionScope(rt.Kind, sessKey))
+}
+
+// sessionScope 给会话键加渠道前缀：不同渠道的 pool 是独立账号集，
+// 同一 conversationId 在两个渠道下必须能绑到各自的账号。
+func (h *Handler) sessionScope(kind provider.Kind, sessKey string) string {
+	return kind.String() + "|" + sessKey
+}
+
+// StartSessionGC 启动会话粘性的后台清理（进程启动时调）。
+func (h *Handler) StartSessionGC() {
+	if h.sessions != nil {
+		h.sessions.StartGC()
+	}
+}
+
+// StopSessionGC 停止会话粘性的后台清理（关停时调，幂等）。
+func (h *Handler) StopSessionGC() {
+	if h.sessions != nil {
+		h.sessions.StopGC()
+	}
+}
+
+// SessionCount 当前会话绑定数（状态观测）。
+func (h *Handler) SessionCount() int {
+	if h.sessions == nil {
+		return 0
+	}
+	return h.sessions.Count()
 }
 
 // stickySuccess 粘性路由成功：递增请求计数。
@@ -257,12 +395,9 @@ func (h *Handler) StickySnapshot() map[string]StickyState {
 
 func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if key := h.currentAPIKey(); key != "" {
-			authz := r.Header.Get("Authorization")
-			if !strings.HasPrefix(authz, "Bearer ") || strings.TrimPrefix(authz, "Bearer ") != key {
-				writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
-				return
-			}
+		if !httpauth.VerifyBearer(r, h.currentAPIKey()) {
+			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
+			return
 		}
 		next(w, r)
 	}
@@ -521,18 +656,33 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	tried := map[string]bool{}
 	var lastErr error
+
+	// 会话粘性键：从**原始** body 提取（rewriteModel 只改 model 字段，
+	// 但在改之前取最省心）。取不到就退化为「只有请求计数粘性」的旧行为。
+	sessKey := session.ExtractKey(body)
+
 	// 最后一次上游错误的原始 status+body：候选耗尽时原样透传（而非包装成 503），
 	// 客户端才能看到 6004 重置时间等上游细节。内容类错误在循环内已提前透传，不受影响。
 	var lastStatus int
 	var lastBody []byte
+	// rotateLoop 标签：WAF IP 级 fail-fast 需要跳出的是**轮转循环**（裸 break 只跳出 switch）。
+rotateLoop:
 	for i := 0; i < h.cfg.MaxRotate; i++ {
-		acct := h.pickWithSticky(rt, model)
+		// 优先级：会话粘性 > 请求计数粘性。
+		// 会话粘性更细（同对话恒定同号，上游 prompt 缓存命中）；拿不到时
+		// 回落计数粘性 / 普通轮换，行为与引入前一致。
+		acct := h.sessionPick(rt, model, sessKey)
+		if acct == nil {
+			acct = h.pickWithSticky(rt, model)
+		}
 		if acct == nil {
 			break
 		}
 		if tried[acct.UID] {
 			// 粘性路由选回已尝试的账号，清除粘性记录后重试
 			h.stickyClear(rt)
+			// 会话粘性同样解绑：它指到了本轮已失败的号上，继续用只会重复失败。
+			h.sessionUnbind(rt, sessKey)
 			acct = rt.Pool.PickExcludingForModel(tried, model)
 			if acct == nil {
 				break
@@ -614,6 +764,17 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			case provider.ErrWafBlock, provider.ErrAccountFault, provider.ErrModelBlocked:
 				// 账号级风控/故障/模型不存在：软冷却，不累计错误计数。
 				rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, kind.String())
+				if kind == provider.ErrWafBlock && h.wafIP.noteWaf(acct.UID) {
+					// 多个不同账号接连撞 WAF 403 → 判为**出口 IP 被拦**（不是账号问题）。
+					// 此时继续轮转只会用同一 IP 继续打上游、加重风控，且必然失败
+					//（号都是好的）。立即 fail-fast，落到循环外的统一错误出口 ——
+					// 把上游原文回给客户端，让用户看到可操作的错误而不是 503。
+					log.Printf("WAF IP 级拦截生效 platform=%s，终止轮转（已试 %d 个账号）", rt.Kind, len(tried))
+					lastErr = fmt.Errorf("upstream waf ip-level block (%d accounts within %s)", len(tried), wafIPWindow)
+					lastStatus = status
+					lastBody = respBody
+					break rotateLoop
+				}
 				if kind != provider.ErrAccountFault {
 					transparentError(w, status, respBody)
 					return
@@ -647,6 +808,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		defer rc.Close()
 		rt.Pool.NoteSuccess(acct.UID)
 		h.stickySuccess(rt)
+		// 会话重绑到**实际成功**的账号：双段哈希只是启发式，可能挑到随后失败/被限流的号，
+		// 真实结果才是权威。绑定后多轮对话会收敛到「对该会话持续成功」的号。
+		h.sessionBind(rt, sessKey, acct)
 		if peek.Stream {
 			usage, serr := rt.Upstream.Stream(w, rc, clientModel)
 			// 记 token 流水（成功请求口径；usage 缺失记 0 token 仅计请求数）。
