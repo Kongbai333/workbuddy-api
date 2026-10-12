@@ -248,6 +248,62 @@ func TestStrategyDefaultAndNormalize(t *testing.T) {
 	}
 }
 
+// TestMaxRotateNormalize 轮换上限的钳制边界。
+//
+// 上限 20 不是随便定的：每个候选至少一次完整上游往返，配成 100 就是把
+// 单个请求放大成 100 次网络调用，在账号多的池子里会表现为「面板卡住」。
+func TestMaxRotateNormalize(t *testing.T) {
+	if got := Default().MaxRotate; got != 3 {
+		t.Fatalf("默认 MaxRotate=%d，应为 3（保持历史行为）", got)
+	}
+	cases := []struct {
+		in   int
+		want int
+	}{
+		{0, 3},   // 未配置 → 默认
+		{-5, 3},  // 负数 → 默认（否则一次都不试，直接判失败）
+		{1, 1},   // 下限：至少试一个
+		{8, 8},   // 常规值原样保留
+		{20, 20}, // 上限边界
+		{999, 20},
+	}
+	for _, tc := range cases {
+		c := Default()
+		c.MaxRotate = tc.in
+		if err := c.normalize(); err != nil {
+			t.Fatalf("normalize(MaxRotate=%d): %v", tc.in, err)
+		}
+		if c.MaxRotate != tc.want {
+			t.Errorf("MaxRotate=%d → %d，want %d", tc.in, c.MaxRotate, tc.want)
+		}
+	}
+}
+
+// TestMaxRotateEnvOverride 环境变量覆盖（容器部署走这条路）。
+func TestMaxRotateEnvOverride(t *testing.T) {
+	t.Setenv("WILDWORK_MAX_ROTATE", "7")
+	c := Default()
+	applyEnv(c)
+	if err := c.normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if c.MaxRotate != 7 {
+		t.Fatalf("env 未生效: %d", c.MaxRotate)
+	}
+}
+
+// TestMaxRotateEnvInvalidIgnored env 给了非数字不应让配置炸掉 ——
+// 与 WILDWORK_STRATEGY 等的处理一致：解析失败则保留原值。
+func TestMaxRotateEnvInvalidIgnored(t *testing.T) {
+	c := Default()
+	c.MaxRotate = 5
+	t.Setenv("WILDWORK_MAX_ROTATE", "abc")
+	applyEnv(c)
+	if c.MaxRotate != 5 {
+		t.Fatalf("非法 env 应被忽略，保留原值；实际 %d", c.MaxRotate)
+	}
+}
+
 // TestStrategyEnvOverride 环境变量可覆盖 strategy（容器部署走这条路）。
 func TestStrategyEnvOverride(t *testing.T) {
 	t.Setenv("WILDWORK_STRATEGY", "roundrobin")

@@ -473,8 +473,8 @@ func (c *Client) CheckinStatus(a *auth.Auth) (checkedIn bool, credits int64, ena
 // 两个账号都是 44842564…），先签的那个用掉当天额度，
 // 后签的会**连撞 9095、一分也领不到**，而账号本身完全正常。
 //
-// 旧项目 workbuddy-wild 的这段逻辑（claimWithRotatedDevice）是用户自己加的，
-// 基线 wild-work 没有，故本项目初版丢失 —— 2026-10-12 已重新移植。
+// 换号重试（claimWithRotatedDevice）是本项目自行补齐的能力，
+// 上游协议未直接提供；2026-10-12 接入签到链路。
 func (c *Client) CheckinClaim(a *auth.Auth) error {
 	log.Printf("traework checkin claim start uid=%s device=%s", a.UID, shortDevice(a.DeviceID))
 

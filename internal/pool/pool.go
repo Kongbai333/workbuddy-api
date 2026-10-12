@@ -300,7 +300,7 @@ func (p *Pool) pickCreditsLocked(cands []*entry) *auth.Auth {
 // 临期>0 的账号恒排在临期=0 之前，即使后者总余额更高——目的是优先烧掉快过期的
 // 积分。expiring 仅统计可消耗额度，且 expiring ≤ credits，不会虚高。
 //
-// 这就是基线 wild-work 里写死的比较键，作为默认策略保留（升级不改变选号行为）。
+// 这套比较键是历史默认行为，保留为默认策略以免升级即改变选号结果。
 func (p *Pool) pickExpireLocked(cands []*entry) *auth.Auth {
 	best := cands[0]
 	for _, e := range cands[1:] {

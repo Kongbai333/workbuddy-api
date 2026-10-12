@@ -86,7 +86,7 @@ func OpenURL(url string) error {
 // 开机自启（LaunchAgent plist）
 // ---------------------------------------------------------------------------
 
-const launchAgentName = "com.rockswang.workbuddy-api"
+const launchAgentName = "com.workbuddy.api"
 
 func launchAgentPath() string {
 	return filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents", launchAgentName+".plist")

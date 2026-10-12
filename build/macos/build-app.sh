@@ -25,8 +25,8 @@ cd "$ROOT"
 
 ARCH="${ARCH:-$(uname -m)}"
 VERSION="$(grep -oE 'const Version = "[^"]+"' internal/app/app.go | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
-APP_NAME="WildWork"
-BUNDLE_ID="com.rockswang.workbuddy-api"
+APP_NAME="WorkBuddyAPI"
+BUNDLE_ID="com.workbuddy.api"
 
 mkdir -p dist
 

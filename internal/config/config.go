@@ -118,6 +118,15 @@ type Config struct {
 	// 空串视为 expire。非法值在 normalize 时报错（面板只给三个合法选项）。
 	Strategy string `json:"strategy,omitempty"`
 
+	// MaxRotate 单次请求最多轮换多少个账号（候选耗尽即返回最后一次上游错误）。
+	//
+	// 为什么需要可配：3 次的默认值对小池够用，但账号多且大量处于冷却时，
+	// 一次请求可能需要穿过更多冷却账号才能命中健康账号；此时 3 次会过早放弃，
+	// 把「本可成功」的请求判成 503。上限 20，防止配置失误把单请求拖成
+	// N 倍上游往返（每个候选至少一次完整请求）。
+	// 0 / 负数 → 默认 3（保持历史行为不变）。
+	MaxRotate int `json:"max_rotate,omitempty"`
+
 	// ---- 会话粘性 ----
 	//
 	// SessionSticky 开启「按会话绑定账号」：同一 conversationId 恒定走同一账号。
@@ -235,6 +244,7 @@ func Default() *Config {
 		StateFile: "./data/state.json",
 		Region:    "cn",
 		Strategy:  "expire",
+		MaxRotate: 3,
 	}
 	c.Cooldown.HardCredit = "12h"
 	c.Cooldown.SoftRate = "60s"
@@ -417,6 +427,11 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("WILDWORK_STRATEGY"); v != "" {
 		c.Strategy = v
 	}
+	if v := os.Getenv("WILDWORK_MAX_ROTATE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.MaxRotate = n
+		}
+	}
 	if v := os.Getenv("WILDWORK_HARD_CREDIT"); v != "" {
 		c.Cooldown.HardCredit = v
 	}
@@ -513,6 +528,14 @@ func (c *Config) normalize() error {
 		c.Strategy = s
 	default:
 		return fmt.Errorf("strategy must be one of expire/credits/roundrobin, got %q", c.Strategy)
+	}
+	// 单请求轮换上限：下限 1（否则一次都不试，直接把候选耗尽当成失败），
+	// 上限 20（防止误配把单请求拖成 20 次上游往返）。
+	if c.MaxRotate <= 0 {
+		c.MaxRotate = 3
+	}
+	if c.MaxRotate > 20 {
+		c.MaxRotate = 20
 	}
 	// 会话粘性时间参数：钳到下限 1 分钟（0 或负数视为未配置 → 落默认）。
 	if c.SessionStickyTTL <= 0 {

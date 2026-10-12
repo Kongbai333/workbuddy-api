@@ -143,9 +143,12 @@ curl -H "Authorization: Bearer $API_KEY" http://127.0.0.1:7863/v1/models
 
 ---
 
-## 七、与旧项目 workbuddy-wild 的差异
+## 七、从更早的部署迁移
 
-| 项 | workbuddy-wild（旧） | workbuddy-api（本项目） |
+早期版本曾用过 `WB2A_*` 环境变量前缀、`/admin/` 面板路径与独立登录助手二进制，
+现已全部收敛。当前形态：
+
+| 项 | 早期 | 现在 |
 |---|---|---|
 | 环境变量前缀 | `WB2A_*` | **`WILDWORK_*`** |
 | 二进制数量 | 3 个（server + 2 个登录助手） | **1 个**（登录走 Web 面板） |
@@ -153,5 +156,4 @@ curl -H "Authorization: Bearer $API_KEY" http://127.0.0.1:7863/v1/models
 | 面板鉴权 | `WB2A_ADMIN=on/off` 开关 | `WILDWORK_ADMIN_PASSWORD`（对外监听必填） |
 | 时区 | 依赖系统 zoneinfo | **二进制内嵌 tzdata** |
 
-迁移旧部署时，环境变量名必须全部替换；镜像名与容器名也从 `workbuddy-wild` 改为 `workbuddy-api`，
-两者可以并存（端口需错开）。
+迁移时环境变量名必须**全部替换**；镜像名与容器名也相应调整，两者可并存（端口需错开）。

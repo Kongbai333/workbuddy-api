@@ -1,6 +1,6 @@
 // Package qoder 封装 QoderWork（qoder.com.cn）上游协议：COSY 签名、
 // QoderEncoding 编码、嵌套 SSE 解析，并实现 provider.Upstream 接口。
-// 移植自 qoderwork2api（Sliverkiss），凭证模型改为 internal/auth.Auth。
+// 凭证模型为本项目统一的 internal/auth.Auth。
 package qoder
 
 import (

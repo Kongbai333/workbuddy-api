@@ -1,0 +1,32 @@
+MIT License
+
+Copyright (c) 2026 workbuddy-api contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+附加声明（非许可证条款，仅为免责说明）
+
+本项目聚合的是第三方 AI 编程平台的托管模型账号。各平台的接口参数、
+签名算法与风控机制均来自社区既有开源项目的公开成果，本项目不产出、
+不包含、不分发任何协议逆向研究成果。
+
+使用本项目造成的账号封禁、额度损失或任何其他后果，由使用者自行承担，
+与本项目作者及贡献者无关。使用者应自行遵守各上游平台的服务条款。

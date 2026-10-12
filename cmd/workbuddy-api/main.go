@@ -537,6 +537,7 @@ func main() {
 		SoftCooldown:      cfg.SoftRateDur,
 		ErrThreshold:      cfg.Cooldown.ErrThresh,
 		ErrCooldown:       cfg.ErrCooldownDur,
+		MaxRotate:         cfg.MaxRotate,
 		WebUI:             sub,
 		AttachAPI:         appInst.HandleAPI,
 	})
@@ -586,8 +587,10 @@ func main() {
 		log.Printf("三接口兼容层已启用：default_channel=%q max_tokens_cap=%d model_map=%d 条",
 			cfg.Compat.DefaultChannel, cfg.Compat.MaxTokensCap, len(cfg.Compat.ModelMap))
 	}
+	// 安全响应头 + 访问日志包在**整个 mux 外层**：兼容层的四个端点由外层
+	// 直接注册，只挂在内层 Handler 上会漏掉它们。
 	appInst.SetHandler(inner)
-	appInst.SetRootHandler(mux)
+	appInst.SetRootHandler(server.SecurityHeaders(mux, log.Printf))
 
 	if err := appInst.StartServer(); err != nil {
 		log.Printf("listen %s failed: %v（面板中将提示）", cfg.Listen.Addr(), err)

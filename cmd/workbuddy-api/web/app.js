@@ -397,7 +397,7 @@ const chLabel = (k) => CH_LABEL[k] || "WorkBuddy";
 const chClass = (k) => CH_CLASS[k] || "wb";
 // 不支持显式签到（手动按钮）的渠道：
 // WorkBuddy 国际版不提供手动签到，而是自动对话保活领日活奖励；
-// 千问办公无签到活动；MonkeyCode 无签到端点；小浣熊无签到端点；Loomy 无签到端点；OpenCodeZen 匿名通道无账号概念（也无积分）。
+// 千问办公无签到活动；MonkeyCode / 小浣熊 / Loomy 均无签到端点。
 const NO_EXPLICIT_CHECKIN = new Set(["workbuddyai", "qwenwork", "monkeycode", "raccoon", "loomy"]);
 const noExplicitCheckin = (g) => NO_EXPLICIT_CHECKIN.has(g);
 // 导入型渠道：凭据由本机已登录的官方客户端提供，没有浏览器登录流程（见 internal/app/import_local.go）。
@@ -411,8 +411,9 @@ const hasProtocolLogin = (ch) => PROTOCOL_LOGIN_CHANNELS.has(ch);
 // 无手动签到渠道的状态文案：国际版是「自动领日活奖励」，千问办公为「无签到」。
 const NO_CHECKIN_TAG = { workbuddyai: "自动领日活奖励" };
 const noCheckinText = (g) => NO_CHECKIN_TAG[g] || "无签到";
-// 无积分概念的渠道（匿名通道）：积分区域显示「不适用」，并隐藏刷新积分/明细入口。
-const NO_CREDITS = new Set(); // 当前无匿名渠道；机制保留以备将来接入
+// 无积分概念的渠道：积分区域显示「不适用」，并隐藏刷新积分/明细入口。
+// 当前所有渠道都有积分概念，故为空集；机制保留以备将来接入匿名通道。
+const NO_CREDITS = new Set();
 
 // creditsText 账号卡片的积分文案。
 // 拆成「可用 / 不可用 / 临期」三个数字：渠道（如 TraeWork）会下发官方客户端专用的
