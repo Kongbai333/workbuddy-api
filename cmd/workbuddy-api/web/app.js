@@ -453,6 +453,10 @@ function renderAccounts() {
   }
   empty.classList.add("hidden");
 
+  // 本轮任务带来的余额增量（uid → 增加分数），在卡片上打 +N 角标。
+  // 只算一次：renderAccounts 逐卡片渲染，多次调用会重复遍历全部账号。
+  const gained = creditDelta();
+
   grid.innerHTML = state.accounts.map((a) => {
     const group = chClass(a.group);
     const groupName = chLabel(a.group);
@@ -515,7 +519,7 @@ function renderAccounts() {
       <div class="acct-uid">UID: ${esc(shortUid(a.uid))}</div>
       <div class="acct-mid">
         <div class="acct-credits"${noCredits ? "" : ` onmouseenter="showCreditDetail(event,'${a.uid}')" onmouseleave="hideCreditDetail()"`}>${creditsText(a)}</div>
-        <div class="acct-checkin">${coolingTag}${checkinTag}</div>
+        <div class="acct-checkin">${gained[a.uid] ? `<span class="tag ok" title="本轮任务带来的积分增量">+${gained[a.uid]}</span>` : ""}${coolingTag}${checkinTag}</div>
       </div>
     </div>`;
   }).join("");
@@ -833,6 +837,8 @@ async function refreshAll() {
 // 单账号要发几十个请求（含真实对话、专家召唤链），多账号可到数分钟，
 // 同步 fetch 会被超时掐断，用户看到的是「点了没反应」。
 let taskPollTimer = null;
+// creditsBefore 本轮任务执行前各账号余额（uid → credits）；用于展示积分增量。
+let creditsBefore = null;
 
 // 任务状态图标与配色类（与 style.css 的 .tk-* 对应）。
 const TASK_STATUS_META = {
@@ -857,11 +863,31 @@ async function runTasks(uid) {
     "耗时可能数十秒到数分钟（有真实对话与请求间隔），期间可在账号列表上方查看进度。\n\n" +
     "确定继续？";
   if (!confirm(msg)) return;
+  // 记录执行前的余额，用于结束后高亮「涨了多少」
+  snapshotCredits();
   try {
     await api("/api/account/tasks", { uid: uid || "", include_mp: false });
     toast("任务已开始执行，进度显示在账号列表上方");
     startTaskPolling();
   } catch (e) { toast(e.message); }
+}
+
+// snapshotCredits 记录当前各账号余额（uid → credits）。
+// 用于任务结束后展示积分增量；任务不涉及奖励时不会产生噪音。
+function snapshotCredits() {
+  creditsBefore = {};
+  (state.accounts || []).forEach((a) => { creditsBefore[a.uid] = a.credits || 0; });
+}
+
+// creditDelta 返回本轮各账号的积分增量（只含 >0 的）。
+function creditDelta() {
+  const out = {};
+  if (!creditsBefore || !state) return out;
+  (state.accounts || []).forEach((a) => {
+    const d = (a.credits || 0) - (creditsBefore[a.uid] ?? (a.credits || 0));
+    if (d > 0) out[a.uid] = d;
+  });
+  return out;
 }
 
 // startTaskPolling 轮询任务进度；进行中每 2.5s 刷一次。
@@ -875,7 +901,7 @@ function startTaskPolling() {
         taskPollTimer = setTimeout(tick, 2500);
       } else {
         taskPollTimer = null;
-        loadState(); // 领到奖后刷新账号积分数值
+        finishTaskRun(v);
       }
     } catch (e) {
       taskPollTimer = null;
@@ -885,8 +911,42 @@ function startTaskPolling() {
   tick();
 }
 
+// finishTaskRun 任务结束后的收尾：刷新积分并提示到账。
+//
+// 为什么必须调刷新接口：`/api/state` 里的 credits 读自**后端缓存**
+// （pool.SetCreditDetail 写入），任务执行本身不会改它 —— 只 loadState()
+// 会看到领奖前的旧值，表现为「任务做完了但积分没变」。
+//
+// 后端在 runTasks 末尾也会刷一遍（覆盖无头/定时场景），这里是给页面兜底：
+// 后端刷新失败、或用户在任务跑到一半时打开页面时，仍能拿到正确余额。
+async function finishTaskRun(v) {
+  const got = (v && v.credit) || 0;
+  const energy = (v && v.energy) || 0;
+  let refreshed = null;
+  try {
+    const r = await api("/api/account/refresh_all", {});
+    if (!r.busy) refreshed = r;
+  } catch (e) {
+    toast("任务已完成，但积分刷新失败：" + e.message);
+  }
+  await loadState();
+  // 真实增量（刷新后的余额 − 执行前余额）。用它比用任务自报的 credit 更可信：
+  // 后者只统计「本次领奖」，若期间还有签到/其他变动会与余额对不上。
+  const delta = creditDelta();
+  let gained = 0;
+  Object.values(delta).forEach((n) => { gained += n; });
+  renderTaskPanel(v, delta);
+  if (refreshed) {
+    const tail = `积分已刷新（成功 ${refreshed.ok} / 失败 ${refreshed.failed || 0}）`;
+    if (gained > 0) toast(`任务完成：余额 +${gained} 分` + (energy ? ` +${energy} 能` : "") + `；${tail}`);
+    else if (got || energy) toast(`任务完成：领奖 +${got} 分 +${energy} 能；${tail}`);
+    else toast(`任务完成（本次余额无变化）；${tail}`);
+  }
+}
+
 // renderTaskPanel 渲染任务执行面板（进度或结果）。
-function renderTaskPanel(v) {
+// delta 为可选的「本轮余额增量」（uid → 增加的分数），用于按账号标注实际收益。
+function renderTaskPanel(v, delta) {
   const box = $("taskPanel");
   if (!v || (!v.running && !(v.reports || []).length && !v.err)) {
     box.classList.add("hidden");
@@ -894,6 +954,7 @@ function renderTaskPanel(v) {
     return;
   }
   box.classList.remove("hidden");
+  delta = delta || {};
 
   let head = "";
   if (v.running) {
@@ -914,9 +975,12 @@ function renderTaskPanel(v) {
   const accounts = (v.reports || []).map((r) => {
     const name = r.nickname ? `${esc(r.nickname)}` : "";
     const uid8 = (r.uid || "").slice(0, 8);
+    // 余额增量（刷新后 − 执行前）。有则高亮显示，是用户最关心的「实际到手多少」。
+    const d = delta[r.uid] || 0;
+    const gain = d > 0 ? `<span class="tk-gain">余额 +${d}</span>` : "";
     const sum = r.err
       ? `<span class="tk-err">${esc(r.err)}</span>`
-      : `<span class="tk-sum">${esc(r.msg || "")}</span>`;
+      : `<span class="tk-sum">${esc(r.msg || "")}</span>${gain}`;
     const items = (r.tasks || []).map(taskRow).join("");
     const manual = (r.manual || []).length
       ? `<div class="task-manual">需在客户端手动完成：${(r.manual || []).map(esc).join("、")}</div>`
@@ -930,7 +994,18 @@ function renderTaskPanel(v) {
 
   box.innerHTML = `<div class="task-panel-head">${head}</div>${accounts}`;
   const closeBtn = $("btnTaskClose");
-  if (closeBtn) closeBtn.onclick = () => { $("taskPanel").classList.add("hidden"); };
+  if (closeBtn) {
+    closeBtn.onclick = () => {
+      $("taskPanel").classList.add("hidden");
+      clearCreditDelta(); // 关闭结果面板即视为「看过了」，撤掉卡片上的 +N 角标
+    };
+  }
+}
+
+// clearCreditDelta 清掉增量快照，使卡片角标不再显示。
+function clearCreditDelta() {
+  creditsBefore = null;
+  renderAccounts();
 }
 
 // taskRow 渲染单条任务结果。

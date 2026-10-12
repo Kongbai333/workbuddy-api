@@ -118,6 +118,8 @@ type taskTarget struct {
 
 // runTasks 后台执行主体。单个账号失败不中断整批。
 func (a *App) runTasks(st *taskRunState, targets []taskTarget, includeMP bool) {
+	// 本轮有到账的账号（跑完再刷新它们的积分）。
+	var credited []string
 	for _, tgt := range targets {
 		runner, ok := tgt.rt.Upstream.(growthTaskRunner)
 		if !ok {
@@ -135,8 +137,13 @@ func (a *App) runTasks(st *taskRunState, targets []taskTarget, includeMP bool) {
 				a.taskMu.Unlock()
 			},
 		})
+		// 有到账（或本轮动过任务）就列入待刷新。
+		if rep.Credit > 0 || rep.Energy > 0 {
+			credited = append(credited, tgt.a.UID)
+		}
 		a.taskProgressDone(st, tgt.a.UID, rep)
 	}
+	a.refreshCreditsAfterTasks(credited)
 
 	a.taskMu.Lock()
 	st.running = false
@@ -149,7 +156,24 @@ func (a *App) runTasks(st *taskRunState, targets []taskTarget, includeMP bool) {
 		energy += r.Energy
 	}
 	a.taskMu.Unlock()
-	log.Printf("task run done scope=%s accounts=%d credit=%d energy=%d", st.scope, total, credit, energy)
+	log.Printf("task run done scope=%s accounts=%d credit=%d energy=%d refreshed=%d",
+		st.scope, total, credit, energy, len(credited))
+}
+
+// refreshCreditsAfterTasks 任务跑完后刷新相关账号的积分余额。
+//
+// 为什么必须做：面板 `/api/state` 的 credits 读自 pool 缓存，
+// 只有 `SetCreditDetail` 会改它。领奖已经真实到账，若不刷新，
+// 用户看到的是「任务做完了但积分没变」—— 会误以为没领到。
+//
+// 在**后端**刷新（而非让前端调刷新接口）的原因：
+// 无头/定时触发时没有页面；页面若中途关闭也会漏刷新。
+func (a *App) refreshCreditsAfterTasks(uids []string) {
+	for _, uid := range uids {
+		if _, err := a.RefreshCredits(uid); err != nil {
+			log.Printf("task run credit refresh failed uid=%s err=%v", uid, err)
+		}
+	}
 }
 
 // taskProgressDone 记录单账号结果并推进计数。
@@ -179,6 +203,9 @@ func (a *App) taskTargets(uid string) []taskTarget {
 		if rt == nil || au == nil {
 			return nil
 		}
+		if !a.channelSupportsGrowth(rt.Kind) {
+			return nil
+		}
 		return []taskTarget{{rt: rt, a: au}}
 	}
 
@@ -188,6 +215,11 @@ func (a *App) taskTargets(uid string) []taskTarget {
 	for _, kind := range a.orderedChannels() {
 		rt := a.runtimes[kind]
 		if rt == nil || rt.Alias || rt.Pool == nil {
+			continue
+		}
+		// 跳过不支持成长中心的渠道：成长任务只有 WorkBuddy 国内版提供，
+		// 其余渠道调用成长接口只会拿到 404，白跑一轮往返还污染日志。
+		if !a.channelSupportsGrowth(kind) {
 			continue
 		}
 		for _, s := range rt.Pool.List() {

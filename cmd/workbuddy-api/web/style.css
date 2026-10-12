@@ -934,3 +934,9 @@ body {
   color: #b91c1c; background: #fee2e2; border: 1px solid #fecaca;
   padding: 1px 6px; border-radius: 6px;
 }
+
+/* 成长任务带来的余额增量（结果面板 + 账号卡片角标） */
+.task-acct-head .tk-gain {
+  color: var(--ok); font-size: 12px; font-weight: 600;
+  background: #dcfce7; border: 1px solid #bbf7d0; padding: 0 6px; border-radius: 6px;
+}
