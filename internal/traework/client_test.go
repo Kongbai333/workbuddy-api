@@ -70,12 +70,25 @@ func TestDailyCheckinSkipsClaimWhenAlreadyCheckedIn(t *testing.T) {
 	}
 }
 
+// TestCheckinClaimBusinessError 持续 9074 时必须返回限流错误。
+//
+// ⚠️ 2026-07 语义变更：CheckinRetryDelay==0 时**不再原地重试**，
+// 直接转 claimWithRotatedDevice换设备号（换号往往立刻就通，
+// 继续用同一个被限流的号反复试是浪费）。
+// 故本用例断言的是「换号后仍全被限流 → 返回错误」，
+// 换号成功/额度校验等路径见 rotate_test.go。
 func TestCheckinClaimBusinessError(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == EpCheckinClaim {
 			calls.Add(1)
 			_, _ = w.Write([]byte(`{"code":9074,"message":"operation too frequent"}`))
+			return
+		}
+		if r.URL.Path == EpEntUsage {
+			// 额度接口：返回固定余额，换号后额度不变 → 判未入账
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"code":0,"user_entitlement_pack_list":[{"entitlement_base_info":{"available_endpoint":0,"quota":{"credits_limit":100}},"usage":{"credits_amount":0}}]}`))
 			return
 		}
 		http.NotFound(w, r)
@@ -86,26 +99,44 @@ func TestCheckinClaimBusinessError(t *testing.T) {
 	c.CheckinRetryDelay = 0
 	c.HTTP = srv.Client()
 	c.UgHost = srv.URL
-	if err := c.CheckinClaim(&auth.Auth{AccessToken: "at"}); err == nil || !strings.Contains(err.Error(), "9074") {
-		t.Fatalf("err=%v, want business 9074 error", err)
+	if err := c.CheckinClaim(&auth.Auth{AccessToken: "at"}); err == nil ||
+		(!strings.Contains(err.Error(), "9074") && !strings.Contains(err.Error(), "rate limited")) {
+		t.Fatalf("err=%v, want 9074 / rate limited error", err)
 	}
-	if calls.Load() != 2 {
-		t.Fatalf("claim calls=%d, want retry", calls.Load())
+	// 原设备号 1 次 + claimWithRotatedDevice 最多 maxRotateAttempts 次
+	if n := calls.Load(); n < 2 || n > maxRotateAttempts+1 {
+		t.Fatalf("claim calls=%d, want 2..%d", n, maxRotateAttempts+1)
 	}
 }
 
+// TestCheckinClaimRetriesRateLimit 首遇 9074 后，换设备号重试应能通过。
+//
+// ⚠️ 2026-07 语义变更：CheckinRetryDelay==0 时不原地重试，直接换号。
+// 本用例改为验证「换号后成功」这条路径。
 func TestCheckinClaimRetriesRateLimit(t *testing.T) {
-	var calls atomic.Int32
+	var claimCalls, usageCalls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != EpCheckinClaim {
+		switch r.URL.Path {
+		case EpCheckinClaim:
+			if claimCalls.Add(1) == 1 {
+				_, _ = w.Write([]byte(`{"code":9074,"message":"operation too frequent"}`))
+				return
+			}
+			// 换号后成功
+			_, _ = w.Write([]byte(`{"code":0,"message":"success"}`))
+		case EpEntUsage:
+			usageCalls.Add(1)
+			// 前置 100；后置（换号入账后）200 → 入账确认通过
+			v := 100
+			if claimCalls.Load() >= 2 {
+				v = 200
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(fmt.Sprintf(
+				`{"code":0,"user_entitlement_pack_list":[{"entitlement_base_info":{"available_endpoint":0,"quota":{"credits_limit":%d}},"usage":{"credits_amount":0}}]}`, v)))
+		default:
 			http.NotFound(w, r)
-			return
 		}
-		if calls.Add(1) == 1 {
-			_, _ = w.Write([]byte(`{"code":9074,"message":"operation too frequent"}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"code":0,"message":"success"}`))
 	}))
 	defer srv.Close()
 
@@ -113,11 +144,14 @@ func TestCheckinClaimRetriesRateLimit(t *testing.T) {
 	c.CheckinRetryDelay = 0
 	c.HTTP = srv.Client()
 	c.UgHost = srv.URL
-	if err := c.CheckinClaim(&auth.Auth{AccessToken: "at"}); err != nil {
+	if err := c.CheckinClaim(&auth.Auth{AccessToken: "at", DeviceID: "origdev1"}); err != nil {
 		t.Fatalf("retry claim: %v", err)
 	}
-	if calls.Load() != 2 {
-		t.Fatalf("claim calls=%d", calls.Load())
+	if claimCalls.Load() < 2 {
+		t.Fatalf("claim calls=%d, want 至少 2（原号 1 次 + 换号至少 1 次）", claimCalls.Load())
+	}
+	if usageCalls.Load() == 0 {
+		t.Fatal("未做额度校验（入账确认）")
 	}
 }
 

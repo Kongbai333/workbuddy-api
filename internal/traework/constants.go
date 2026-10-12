@@ -40,6 +40,34 @@ const (
 	EpModelsPricing = "/api/remote/v1/models"               // 模型定价接口
 )
 
+// 签到业务码。
+//
+// ⚠️ 这两个码的定性经历了两次反转，最终结论来自 2026-10-01~10-02 实测，
+// 详见 client.go 的 CheckinClaim 与 claimWithRotatedDevice 注释。
+const (
+	// CheckinRateLimitCode 9074「当前参与用户太多，请稍后再试」。
+	//
+	// **是瞬时限流，不是「设备号未注册」**（v0.5.7~v0.6.8 曾误判为后者）。
+	// 实测同一操作有时成功、有时 9074，稍后重试或换号即可通过。
+	CheckinRateLimitCode = 9074
+
+	// CheckinAlreadyClaimedCode 9095「当前设备今日已经签到，请明日再来哦～」。
+	//
+	// ⚠️ 关键：它是**设备维度**的拒绝，而额度发放是**账号维度**的。
+	// 同一设备号下只要有一个账号领过，其他当天没领的账号就会被连带拒绝 ——
+	// 换一个全新设备号即可正常入账（实测 4600 → 4700）。
+	//
+	// 这正是 2026-10-12 事故的成因：两个 TraeWork 账号共用设备号 44842564…，
+	// 先签的那个用掉当天额度，后签的连撞两次 9095、100 积分没领到。
+	CheckinAlreadyClaimedCode = 9095
+)
+
+// maxRotateAttempts 换设备号重试的最大尝试次数。
+//
+// 为什么是多次而非一次：换号请求本身有一定概率撞上 9074（瞬时限流），
+// 只试一次正好撞上就彻底放弃，会让本可成功的账号当天签不到。
+const maxRotateAttempts = 8
+
 const DefaultConfigName = "glm-5.2"
 
 // softRateResetLoc 上游时间戳展示口径：固定按 UTC+8 墙钟解释。
