@@ -345,7 +345,14 @@ func main() {
 		GrowthTasks:          cfg.Schedule.GrowthTasks,
 		GrowthTasksIncludeMP: cfg.Schedule.GrowthTasksIncludeMP,
 	})
-	trSch := scheduler.New(scheduler.Config{Pool: trPool, Upstream: trUp, Name: "traework", CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg})
+	// TraeWork：开启限流延迟重试。
+	//
+	// 依据 2026-10-12 实测：claim 在高峰会返回 9074（"当前参与用户太多"），
+	// 单次调用内虽然已有换设备号重试（最多 8 个号 / 约 1 分钟），高峰期仍可能
+	// 持续更久。若不安排延迟重试，本时段不会标记完成，只能干等到下一个签到
+	// 时刻（默认 21:00）—— 当天就这么丢了（当天 09:00 撞限流，14:26 手动才补领）。
+	// TraeWork 是唯一有账号级限流的渠道，故只在此打开。
+	trSch := scheduler.New(scheduler.Config{Pool: trPool, Upstream: trUp, Name: "traework", CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg, RetryOnFailure: true})
 	// Qoder 无签到活动：调度器只做 token keepalive（每日 refresh 保活）。
 	// CheckinMinutes 用显式空切片关闭（传 nil 会被 scheduler.New 补成默认 9:00/21:00）。
 	qdSch := scheduler.New(scheduler.Config{Pool: qdPool, Upstream: qdUp, Name: "qoder", CheckinMinutes: []int{}, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg})

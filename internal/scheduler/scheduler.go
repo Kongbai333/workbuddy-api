@@ -40,6 +40,16 @@ type Config struct {
 	// 0 = 关闭重试（只按 CheckinMinutes 精确触发）。
 	CheckinRetryUntil int
 
+	// RetryOnFailure 开启「限流延迟重试」：可重试的签到失败（限流/5xx/网络抖动）
+	// 后按账号安排独立于定时点的延迟重试（10/20/30…分钟递增，当天上限 6 次），
+	// 详见 retry.go。
+	//
+	// 默认关闭。原因是本项目的 Retryable 覆盖面比旧项目宽：`no_campaign`
+	// 与 `no refresh token` 也会置位，而前者已由 CheckinRetryUntil 的
+	// 窗口重试覆盖、后者只能靠用户重新登录 —— 对它们再叠一层按账号的延迟
+	// 重试属于无意义的上游请求。只为确有账号级限流的渠道（如 TraeWork 9074）打开。
+	RetryOnFailure bool
+
 	// ActivitiesOnly 表示本渠道无签到活动：定时仍调用 Upstream.DailyCheckin
 	// （用于账号活跃保活），但不记录、不上报签到状态，保持对用户透明。
 	// WorkBuddy 国际版使用该模式。
@@ -92,6 +102,13 @@ type Scheduler struct {
 	// 若只按日标记，早间签到成功会连带吞掉晚间时段。
 	checkinDone map[string]bool
 
+	// retries 限流延迟重试状态，uid → retryState（见 retry.go）。
+	// 与 checkinDone 共用 retryMu：两者都是「调度状态」，且都只在
+	// 短临界区内读写（map 遍历 + 字段赋值），不存在长时间持锁。
+	retries map[string]*retryState
+	// retryFlag 延迟重试开关，独立锁（retryFlag 内部自带，见 retry.go 的说明）。
+	retryFlag retryFlag
+
 	// growthDoneDay 成长自动化当日已执行标记（"YYYY-MM-DD"）。
 	// 与 checkinDone 同为 retryMu 保护；置位与检查必须原子 ——
 	// 否则并发的两次触发会同时通过检查，导致重复兑换/重复抽奖。
@@ -136,6 +153,8 @@ func New(cfg Config) *Scheduler {
 	}
 	return &Scheduler{
 		cfg: cfg, wake: make(chan struct{}, 1), checkinDone: map[string]bool{},
+		retries:   map[string]*retryState{},
+		retryFlag: retryFlag{on: cfg.RetryOnFailure},
 		growth: growthOpts{
 			redeemStreak:   cfg.GrowthRedeemStreak,
 			travel:         cfg.GrowthTravel,
@@ -349,6 +368,11 @@ func (s *Scheduler) Run(ctx context.Context) {
 			// 兜底睡一分钟，避免零值时间导致 time.NewTimer 立即返回造成忙循环。
 			next = time.Now().Add(time.Minute)
 		}
+		// 限流延迟重试可能早于下一个定时点（如 09:00 撞限流 → 09:10 重试，
+		// 而下一个定时点是 21:00）。不提前唤醒的话，延迟重试形同虚设。
+		if ra := s.nextRetryAt(); !ra.IsZero() && ra.After(time.Now()) && ra.Before(next) {
+			next = ra
+		}
 		timer := time.NewTimer(time.Until(next))
 		select {
 		case <-ctx.Done():
@@ -378,6 +402,10 @@ func (s *Scheduler) Run(ctx context.Context) {
 			if contains(kh, now.Hour()) {
 				s.RunKeepaliveNow()
 			}
+			// 限流延迟重试：只签到期的那几个账号，不影响其它账号
+			// （可能与上面的定时/窗口签到撞在同一分钟，此时会多签一次 ——
+			//  幂等，且 markRetryable 的退避计数会自行收敛）。
+			s.runDueRetries(now)
 		}
 	}
 }
@@ -512,7 +540,7 @@ func (s *Scheduler) runCheckin(start int) {
 	log.Printf("checkin batch start platform=%s accounts=%d slot=%d", name, len(s.cfg.Pool.List()), start)
 	retryable := 0
 	for _, st := range s.cfg.Pool.List() {
-		r := s.checkinOne(st.UID)
+		r := s.checkinOne(st.UID, start)
 		if r.Retryable {
 			retryable++
 		}
@@ -537,7 +565,8 @@ func (s *Scheduler) CheckinAccount(uid string) (CheckinResult, error) {
 		return CheckinResult{}, fmt.Errorf("unknown account %s", uid)
 	}
 	_ = st // 不论停用与否都签到
-	return s.checkinOne(uid), nil
+	// 手动签到无时段归属（-1）：其触发的限流重试不会去标记任何时段完成。
+	return s.checkinOne(uid, -1), nil
 }
 
 // finishCheckin 统一收尾：记录签到状态并上报观察者。
@@ -551,7 +580,10 @@ func (s *Scheduler) finishCheckin(uid string, r CheckinResult) CheckinResult {
 }
 
 // checkinOne 单账号签到 + 余额刷新 + 解冻 + 记录签到状态。
-func (s *Scheduler) checkinOne(uid string) CheckinResult {
+//
+// slot 为本次签到所属的时段（当天分钟数），仅用于限流延迟重试的归属标记；
+// -1 表示无时段归属（面板手动签到 / RunCheckinNow）。
+func (s *Scheduler) checkinOne(uid string, slot int) CheckinResult {
 	name := s.name()
 	log.Printf("checkin start platform=%s uid=%s", name, uid)
 	a := s.cfg.Pool.AuthByUID(uid)
@@ -633,6 +665,13 @@ func (s *Scheduler) checkinOne(uid string) CheckinResult {
 			s.cfg.Ledger.DiffCredits(name, uid, usable, items)
 		}
 	}
+	// 维护限流延迟重试状态（见 retry.go）：成功清零 / 可重试失败续排。
+	//
+	// 放在**余额刷新之后**调用：余额查询失败会把 r.OK 改成 false，但那不代表
+	// 签到没领到（可能已入账、只是查余额失败）。此时若让 r.Retryable 决定重试，
+	// 会把「已领到但查不到余额」的账号拖进退避重试 —— 白白多打上游，
+	// 甚至因查到余额仍失败而反复重试到当天上限。
+	s.scheduleRetryFor(uid, r, time.Now(), slot)
 	return s.finishCheckin(uid, r)
 }
 
