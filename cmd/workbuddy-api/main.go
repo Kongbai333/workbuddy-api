@@ -125,7 +125,29 @@ func main() {
 		fatal("加载配置失败：%v\n\n请检查 config.json 后重新启动", err)
 	}
 	if firstRun {
+		// 首次启动必须**明确告知 key 的值**，而不只是「已生成」。
+		//
+		// 为什么必须打印：config.json 是自动生成的，用户没参与这个决策，
+		// 不知道自己的服务需要一个 key 才能接入 AI 客户端。等到他打开
+		// 面板、客户端连不上、报 401，才会回头找这个值 —— 而无头模式下
+		// 他可能根本没意识到要去面板找。
+		//
+		// 这也是本项目不设「固定默认 key」的原因之一：随机生成的值必须
+		// 有明确的获取途径，否则等于没有。四个途径：本次日志、面板顶栏
+		// （点击复制）、设置弹层、直接看 config.json。
 		log.Printf("config.json 不存在，已按默认值 + WILDWORK_* 环境变量生成")
+		if cfg.APIKey != "" {
+			log.Printf("")
+			log.Printf("  ┌─────────────────────────────────────────────")
+			log.Printf("  │ 你的 API Key（接入 AI 客户端时填这个）")
+			log.Printf("  │   %s", cfg.APIKey)
+			log.Printf("  │")
+			log.Printf("  │ 已随机生成并写入 config.json，请妥善保管 ——")
+			log.Printf("  │ 它是访问接口的凭证，别放进公开仓库或分享给他人。")
+			log.Printf("  │ 面板顶栏可点击复制，或随时在 ⚙ 设置中修改。")
+			log.Printf("  └─────────────────────────────────────────────")
+			log.Printf("")
+		}
 	}
 	// 首次启动：从旧项目目录导入账号凭据（旧项目 workbuddy-wild 原样保留，不受影响）。
 	// 只复制 auths/，不复制 data/（冷却与签到状态属运行时产物）。
@@ -139,6 +161,24 @@ func main() {
 	}
 	if cfg.AdminPass != "" && len(cfg.AdminPass) < 8 {
 		log.Printf("警告：管理员密码不足 8 位，建议使用更长口令（面板鉴权已生效）")
+	}
+	// API Key 为空 = **完全关闭接口鉴权**（httpauth.VerifyBearer 首行即放行）。
+	// 这不是「弱密码」，而是「无密码」，但它与 admin_password 不同：
+	// 后者管面板（改配置、退出程序），前者管 AI 客户端接口（消耗账号额度）。
+	// 监听非环回时，空 key 等于把上游额度敞给整个局域网。
+	//
+	// 这里与 admin_password 同等对待 —— 拒绝启动而非仅告警：
+	// 用户真正的意图几乎不会是「我要对外开一个无鉴权的接口」，
+	// 若是误操作，静默启动会造成长期暴露且无人察觉。
+	if strings.TrimSpace(cfg.APIKey) == "" {
+		if !cfg.Listen.IsLoopback() {
+			fatal("监听 %s 已对外暴露，但 config.json 中 api_key 为空（等于完全关闭接口鉴权）。\n\n"+
+				"请设置 api_key，或把 listen.host 改回 127.0.0.1 仅本机使用。\n"+
+				"提示：删掉 api_key 这个「字段」不会重新生成 —— 缺失字段会沿用"+
+				"程序生成的随机值；只有显式写成空字符串 \"api_key\": \"\" 才会关闭鉴权。",
+				cfg.Listen.Addr())
+		}
+		log.Printf("警告：api_key 为空，接口未启用鉴权（任何本机进程都能调用并消耗账号额度）")
 	}
 	_ = os.MkdirAll(cfg.AuthDir, 0o755)
 	_ = os.MkdirAll(filepath.Dir(cfg.StateFile), 0o755)

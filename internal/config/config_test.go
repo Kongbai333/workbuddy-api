@@ -260,3 +260,42 @@ func TestStrategyEnvOverride(t *testing.T) {
 		t.Fatalf("env 未生效: %q", c.Strategy)
 	}
 }
+
+// TestLoadMissingAPIKeyKeepsDefault 锁定一个反直觉但重要的行为：
+// **配置里缺少 api_key 字段 ≠ 关闭鉴权**。
+//
+// Load 的流程是先 Default()（填随机 key）再用 JSON 覆盖，因此：
+//   - 缺 api_key 字段        → 保留 Default() 的随机值 → 仍有鉴权
+//   - 显式 "api_key": ""     → 覆盖成空 → VerifyBearer 首行放行 → **无鉴权**
+//
+// 写这个测试是因为我一度在启动提示里断言「删掉字段会退回空值」，
+// 实测发现是错的。凭印象写错误提示比不写更糟 —— 用户会照着错误理解去排查。
+func TestLoadMissingAPIKeyKeepsDefault(t *testing.T) {
+	fp := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(fp, []byte(`{"listen":{"host":"127.0.0.1","port":7863}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(fp)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if c.APIKey == "" {
+		t.Fatal("缺少 api_key 字段时应保留随机默认值，而不是变成空（空 = 无鉴权）")
+	}
+}
+
+// TestLoadExplicitEmptyAPIKeyDisablesAuth 与上一个测试成对：
+// 显式空字符串**确实**会关闭鉴权，这是 main.go 里拒绝启动的那条路径。
+func TestLoadExplicitEmptyAPIKeyDisablesAuth(t *testing.T) {
+	fp := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(fp, []byte(`{"api_key":""}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(fp)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if c.APIKey != "" {
+		t.Fatalf("显式空字符串应关闭鉴权，实际=%q", c.APIKey)
+	}
+}
