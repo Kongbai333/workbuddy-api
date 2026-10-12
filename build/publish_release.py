@@ -26,7 +26,22 @@ TAG = "v0.1.1"
 TOKEN_FILE = r"C:\Users\Administrator\Desktop\GitHub API.txt"
 EXE = r"C:\Users\Administrator\workbuddy-api\dist\workbuddy-api.exe"
 
-BODY = """## 快速开始
+BODY = """## ⚠️ v0.1.1 安全修复
+
+**v0.1.1 移除了「首次启动自动从其他目录导入账号凭据」的功能。**
+
+旧版在真首次启动时会探测两个目录（开发者的旧项目路径，以及
+`%USERPROFILE%\wbsync\build\bin`），若其中存在 `auths/*.json` 就把里面的
+登录态凭据（access/refresh token）复制进新目录。该行为存在三个问题：
+
+1. 公开源码里暴露了开发者的私人部署路径；
+2. 扫描用户主目录属于**未经请求的数据获取**；
+3. 静默复制凭据是明确的隐私问题，用户完全无从预期。
+
+若你从 v0.1.0 升级且不需要该行为，**直接替换 exe 即可**。
+需要迁移账号时，请在面板里重新登录，或手工把 `auths/*.json` 拷入程序目录。
+
+## 快速开始
 
 1. 下载 `workbuddy-api-windows-amd64.exe`，放到任意目录
 2. 双击启动 —— **首次启动会自动生成一个随机 API Key 并打印在日志里**
