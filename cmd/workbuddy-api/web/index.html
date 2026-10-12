@@ -486,7 +486,15 @@
       <p>版本 <span id="aboutVer"></span></p>
       <p>多渠道账号聚合工具</p>
       <p>基于 WorkBuddy + TraeWork + Qoder 上游</p>
-      <p style="margin-top:8px;font-size:12px">仅供个人学习使用</p>
+      <p style="margin-top:14px;font-size:12px;color:var(--text)">项目仓库</p>
+      <p style="margin-top:4px">
+        <!-- 用 code + 复制按钮而不是裸 <a>：面板跑在局域网地址上，
+             点链接会新开浏览器访问 GitHub，在部分内网环境反而打不开。
+             给出可一键复制的地址更实用。 -->
+        <code id="aboutRepo" class="about-repo"
+          title="点击复制仓库地址">https://github.com/sddvcm/workbuddy-api</code>
+      </p>
+      <p style="margin-top:8px;font-size:12px">点击地址可复制 · 仅供个人学习使用</p>
     </div>
     <div class="modal-actions" style="justify-content:center">
       <button class="btn small primary" id="btnAboutClose">关闭</button>

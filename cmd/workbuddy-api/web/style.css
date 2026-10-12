@@ -333,6 +333,22 @@ body {
 }
 .fees code.fee-model-copy:hover { background: #eff6ff; color: var(--primary); }
 .fees code.fee-model-copy:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+
+/* 「关于」里的仓库地址：可点击复制。
+   样式对齐 fee-model-copy —— 项目里所有「点一下就复制」的元素
+   视觉语言保持一致，用户不需要重新学习「什么能点」。 */
+code.about-repo {
+  display: inline-block;
+  cursor: pointer;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #f7f8fa;
+  font-size: 12px;
+  transition: all .15s;
+}
+code.about-repo:hover { background: #eff6ff; color: var(--primary); border-color: var(--primary); }
+code.about-repo:active { transform: translateY(1px); }
 .fees td.dim { color: var(--muted); font-size: 12px; }
 /* 倍率显示：Free 高亮 / 已定价 / 未知（带 tooltip） */
 .fees .rate-free {

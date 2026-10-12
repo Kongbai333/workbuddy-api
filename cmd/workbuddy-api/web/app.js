@@ -1809,6 +1809,20 @@ function closeHelp() { $("helpOverlay").classList.add("hidden"); }
 function openAbout() { $("aboutOverlay").classList.remove("hidden"); }
 function closeAbout() { $("aboutOverlay").classList.add("hidden"); }
 
+// 「关于」里的仓库地址：点击复制。
+//
+// 为什么不做成 <a href>：面板常跑在局域网地址上，点链接会让浏览器新开
+// GitHub —— 在不少内网/离线环境里这一步就是卡住，用户拿不到地址。
+// 给出可一键复制的纯文本更实用，也与项目其它「点一下就复制」的交互一致。
+const REPO_URL = "https://github.com/sddvcm/workbuddy-api";
+function initAboutRepo() {
+  const el = $("aboutRepo");
+  if (!el) return;
+  // 以 DOM 文本为准（REPO_URL 是同值的常量），避免两处失同步时用户复制到错的
+  el.textContent = REPO_URL;
+  el.onclick = () => copyText(REPO_URL, "仓库地址");
+}
+
 // ---------- 通用确认框 ----------
 function confirmDialog(msg, onOk) {
   $("confirmMsg").textContent = msg;
@@ -1893,6 +1907,7 @@ function bind() {
 
   $("btnHelp").onclick = openHelp;
   $("btnAbout").onclick = openAbout;
+  initAboutRepo();
   $("btnHelpClose").onclick = closeHelp;
   $("btnAboutClose").onclick = closeAbout;
 
