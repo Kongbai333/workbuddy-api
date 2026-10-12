@@ -1946,6 +1946,16 @@ type AccountView struct {
 	// Growth 该账号所属渠道是否支持成长中心（决定面板是否显示「做任务」入口）。
 	// 成长中心目前仅 WorkBuddy 国内版提供。
 	Growth bool `json:"growth,omitempty"`
+	// LastUsedAt 最近一次真正发起调用的时间（空 = 从未调用）。前端据此排
+	// 「最近用过」并在卡片上显示时间。
+	LastUsedAt string `json:"last_used_at,omitempty"`
+	// InUse 该账号此刻是否正在被调用（由 LastUsedAt 在 pool.InUseWindow
+	// 内推断）。流式调用没有结束信号，用时间窗近似，见 pool.InUseWindow。
+	//
+	// 刻意**不加** omitempty：加了之后 false 会被整个省略，前端拿到 undefined
+	// 而非 false —— 布尔判断里虽等价，但「显式为假」与「字段缺失」从此无法区分
+	// （本项目踩过一次：调试时误以为打点没生效）。体积代价可忽略。
+	InUse bool `json:"in_use"`
 }
 
 // StrategyOption 前端下拉的一项（值 + 中文名 + 说明）。
@@ -2099,6 +2109,10 @@ func (a *App) accountViews() []AccountView {
 			LastCheckinAt:   fmtTime(s.LastCheckinAt),
 			LastCheckinMsg:  s.LastCheckinMsg,
 			Growth:          a.channelSupportsGrowth(provider.Kind(group)),
+			// LastUsedAt 供前端排「最近用过」与展示时间；InUse 是面板
+			// 轮询时现算的快照（InUseWindow 内被打点即视为调用中）。
+			LastUsedAt: fmtTime(s.LastUsedAt),
+			InUse:      pool.InUse(s.LastUsedAt, time.Now()),
 		})
 	}
 	// 面板固定渠道序展示：OpenCodeZen → WorkBuddyCN → WorkBuddyAI → QoderCN → QoderCOM → TraeWork → 千问办公

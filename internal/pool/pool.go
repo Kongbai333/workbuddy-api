@@ -65,6 +65,8 @@ type Status struct {
 	// ModelCooling 账号在个别模型上的独立冷却（429/6004 按模型限，账号整体仍可用）。
 	// 仅包含仍处于未来的条目；空 = 无模型级冷却。供路由过滤与面板展示。
 	ModelCooling map[string]time.Time `json:"model_cooling,omitempty"`
+	// LastUsedAt 最近一次真正发起调用的时间，零值 = 从未调用。仅面板展示。
+	LastUsedAt time.Time `json:"last_used_at,omitempty"`
 }
 
 type entry struct {
@@ -86,6 +88,34 @@ type entry struct {
 	lastCheckinOK  bool
 	lastCheckinAt  time.Time
 	lastCheckinMsg string
+
+	// lastUsedAt 最近一次**真正发起调用**的时间，零值 = 从未调用过。
+	//
+	// 由 NotifyUsed 在请求发出前打点，不是 Pick 时自动记录 —— 挑号不等于
+	// 用了它：token 刷新失败、首个模型冷却重试、定价刷新都会调 Pick，却未必
+	// 真的把请求送出去。在「发送前」打点才与用户看到的「调用中」一致。
+	lastUsedAt time.Time
+}
+
+// NotifyUsed 记录一次实际调用，供面板显示「调用中」。
+//
+// 时间窗的意义：调用是流式的（可能持续几十秒），面板不可能精确知道何时结束。
+// 故用「最近 N 秒内被打点过」近似为「正在调用」—— 见 InUseWindow。
+//
+// 轮询策略下顺带推进游标：让「刚用的号」在下一轮里排到最后，实现真正的
+// 轮换。若不在此处推进，rrLast 只在 pick 时更新，连续命中同一账号会导致
+// 游标实际不前进。
+func (p *Pool) NotifyUsed(uid string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return
+	}
+	e.lastUsedAt = time.Now()
+	if p.strategy == StrategyRoundRobin {
+		p.rrLast = uid
+	}
 }
 
 func (e *entry) healthy(now time.Time) bool {
@@ -559,6 +589,20 @@ func (p *Pool) List() []Status {
 	return out
 }
 
+// InUseWindow「正在调用」的时间窗：最近这么多秒内被打点的账号视为调用中。
+//
+// 为什么用时间窗近似而不是真实状态机：ChatStream 是流式的，一次调用可能
+// 持续几十秒，期间既无开始也无结束信号可挂。要准确追踪就得给每个请求
+// 建上下文并在 handler 返回时清理，还要处理客户端断连、超时、panic ———
+// 复杂度和收益不成正比（面板只需要知道「哪个号正在被用」）。
+// 5 秒窗的副作用：连续小请求会让徽标一直亮着，这符合直觉（确实在频繁使用）。
+const InUseWindow = 5 * time.Second
+
+// InUse 判断某账号此刻是否处于「调用中」。
+func InUse(lastUsedAt time.Time, now time.Time) bool {
+	return !lastUsedAt.IsZero() && now.Sub(lastUsedAt) < InUseWindow
+}
+
 func (p *Pool) statusOf(uid string, e *entry) Status {
 	now := time.Now()
 	var mc map[string]time.Time
@@ -586,6 +630,7 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
 		LastCheckinAt:   e.lastCheckinAt,
 		LastCheckinMsg:  e.lastCheckinMsg,
 		ModelCooling:    mc,
+		LastUsedAt:      e.lastUsedAt,
 	}
 }
 

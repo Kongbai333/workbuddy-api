@@ -410,3 +410,72 @@ func TestCooldownModelPersists(t *testing.T) {
 		t.Fatalf("重启后同号其他模型应可用: %+v", got)
 	}
 }
+
+// TestNotifyUsedRecordsTimestamp 锁定「调用中」的判定基础：
+// 打点后 InUse 为真，且 List() 能把时间透出给面板。
+func TestNotifyUsedRecordsTimestamp(t *testing.T) {
+	p := New("")
+	p.Add(&auth.Auth{UID: "u1"})
+	p.Add(&auth.Auth{UID: "u2"})
+	st1, ok1 := p.Status("u1")
+	if !ok1 {
+		t.Fatal("u1 不在池中")
+	}
+	if InUse(st1.LastUsedAt, time.Now()) {
+		t.Fatal("从未调用过就应是 InUse")
+	}
+	p.NotifyUsed("u2")
+	st2, ok2 := p.Status("u2")
+	if !ok2 {
+		t.Fatal("u2 不在池中")
+	}
+	if st2.LastUsedAt.IsZero() {
+		t.Fatal("NotifyUsed 未记录时间")
+	}
+	if !InUse(st2.LastUsedAt, time.Now()) {
+		t.Fatal("刚打点应处于 InUse")
+	}
+	if InUse(st1.LastUsedAt, time.Now()) {
+		t.Fatal("未被打点的账号不应变成 InUse")
+	}
+}
+
+// TestInUseWindowExpires 锁定时间窗语义：窗内为真，窗外为假。
+//
+// 用显式的 now 参数而非 time.Sleep —— 后者会让测试真的睡 5 秒，
+// 且在负载高的机器上产生 flaky（睡过头仍判假、过短仍判真）。
+func TestInUseWindowExpires(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		name string
+		at   time.Time
+		want bool
+	}{
+		{"零值(从未调用)", time.Time{}, false},
+		{"窗内(刚打点)", now, true},
+		{"窗内(4.9s)", now.Add(-4900 * time.Millisecond), true},
+		{"窗外(5.1s)", now.Add(-5100 * time.Millisecond), false},
+		{"窗外(很久以前)", now.Add(-time.Hour), false},
+	}
+	for _, c := range cases {
+		if got := InUse(c.at, now); got != c.want {
+			t.Errorf("%s: InUse=%v, 期望 %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestNotifyUsedAdvancesRoundRobinCursor 锁定轮询策略下 NotifyUsed 的副作用：
+// 它必须推进游标，否则连续命中同一账号时游标实际不前进，「轮询」名不副实。
+func TestNotifyUsedAdvancesRoundRobinCursor(t *testing.T) {
+	p := New("")
+	p.Add(&auth.Auth{UID: "u1"})
+	p.Add(&auth.Auth{UID: "u2"})
+	p.SetCreditDetail("u1", 100, 0, 0)
+	p.SetCreditDetail("u2", 100, 0, 0)
+	p.SetStrategy(StrategyRoundRobin)
+	p.NotifyUsed("u2")
+	// 下一轮 Pick 应轮到 u1（游标已被推到 u2 之后）
+	if got := p.Pick(); got == nil || got.UID != "u1" {
+		t.Fatalf("NotifyUsed 后应轮到 u1，实际=%v", got)
+	}
+}

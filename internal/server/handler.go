@@ -708,6 +708,16 @@ rotateLoop:
 			}
 			log.Printf("refresh success platform=%s uid=%s expires_at=%d", rt.Kind, acct.UID, acct.ExpiresAt)
 		}
+		// 打点「正在调用」：紧邻 ChatStream 之前，而非 Pick 时。
+		//
+		// 位置很讲究 —— Pick 到 ChatStream 之间还有 token 刷新（可能失败并
+		// continue 换号）。在 Pick 处打点会把「从没真正发出去的请求」也算成
+		// 调用中，面板上出现「调用中」却实际没在调。放在 ChatStream 前一行，
+		// 语义才是「这个账号此刻真的在被请求」。
+		//
+		// 流式响应可能持续数十秒，故不在返回时清除（见 pool.InUseWindow 的说明）。
+		rt.Pool.NotifyUsed(acct.UID)
+
 		rc, status, respBody, terr := rt.Upstream.ChatStream(acct, body)
 		if terr != nil {
 			lastErr = terr

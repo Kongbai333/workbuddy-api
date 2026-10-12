@@ -159,6 +159,41 @@ body {
   display: flex; flex-direction: column; gap: 8px; background: var(--card);
 }
 .acct-card.disabled { opacity: 0.5; background: #f9fafb; }
+
+/* 「调用中」徽标：绿点 + 呼吸动画，比纯文字更容易在扫视时捕捉到。
+   配色复用 --ok，与 .tag.ok 同一套语义（正常 / 活跃），不引入新色。 */
+.live-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10px; padding: 2px 7px 2px 5px; border-radius: 10px;
+  background: #dcfce7; color: var(--ok); white-space: nowrap;
+  vertical-align: middle;
+}
+.live-dot {
+  width: 5px; height: 5px; border-radius: 50%; background: var(--ok);
+  animation: livePulse 1.4s ease-in-out infinite;
+}
+/* 呼吸而非闪烁：闪烁在浅色卡片上刺眼且易被误认为告警。
+   动画暂停在缩小态，故用 alternate 让它来回而非一直缩小。 */
+@keyframes livePulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: .45; transform: scale(.8); }
+}
+/* 尊重系统的「减少动态效果」设置 —— 前庭功能障碍用户对闪烁敏感。 */
+@media (prefers-reduced-motion: reduce) {
+  .live-dot { animation: none; }
+}
+
+/* 「最近用过」徽标：中性灰，与「调用中」拉开层级（它已结束）。 */
+.used-badge {
+  display: inline-block; font-size: 10px; padding: 2px 7px; border-radius: 10px;
+  background: #f0f2f5; color: var(--muted); white-space: nowrap;
+  vertical-align: middle;
+}
+
+/* 调用中的整卡高亮：边框+底色轻微变化，让视线直接落到正在工作的账号。
+   只用 --ok 的低透明度派生色，避免与冷却/停用的配色冲突。 */
+.acct-card.in-use { border-color: rgba(22,163,74,.35); background: #f4fdf7; }
+
 .acct-card .acct-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
 .acct-card .acct-name { font-weight: 600; font-size: 14px; }
 .acct-card .acct-uid { font-size: 11px; color: var(--muted); }

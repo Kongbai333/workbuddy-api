@@ -102,6 +102,43 @@ async function loadState() {
   render();
 }
 
+// 轮询「调用中」状态。
+//
+// 为什么单独拉 /api/state 而不是复用 loadState：loadState 会清空 detailCache
+// 并全量 render()，高频调用会让用户的积分 tooltip 反复消失、正在编辑的输入框
+// 被重绘打断。而这个功能只需要 in_use 这一个字段。
+//
+// 为什么仍走 /api/state 而不加专用端点：/api/state 是纯读、无副作用，且当前
+// 账号规模下开销可忽略（几十 KB JSON）。为它新增端点反而多一处要维护的契约。
+async function pollInUse() {
+  // 用户正在输入时不要动 DOM：重渲染会把光标位置和已输入内容弄乱。
+  const t = document.activeElement;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+  try {
+    const st = await api("/api/state");
+    const accs = st.accounts || [];
+    // 只改徽标与高亮，不整体重建 DOM —— 保住 hover 态与滚动位置。
+    for (const el of document.querySelectorAll(".acct-card")) {
+      const uid = el.dataset.uid;
+      const a = accs.find((x) => x.uid === uid);
+      if (!a) continue;
+      el.classList.toggle("in-use", !!a.in_use);
+      const box = el.querySelector(".acct-live-slot");
+      if (!box) continue;
+      box.innerHTML = liveTagHtml(a);
+    }
+  } catch (e) { /* 轮询失败静默：不该因瞬时网络抖动弹错误 */ }
+}
+
+// liveTagHtml 与 renderAccounts 里保持一致（供 render + pollInUse 共用，避免两处失同步）。
+function liveTagHtml(a) {
+  return a.in_use
+    ? `<span class="live-badge" title="该账号正在处理请求"><span class="live-dot"></span>调用中</span>`
+    : (a.last_used_at
+      ? `<span class="used-badge" title="最近调用：${esc(a.last_used_at)}">最近用过</span>`
+      : "");
+}
+
 async function loadFees() {
   try {
     const fees = await api("/api/fees");
@@ -573,12 +610,20 @@ function renderAccounts() {
       ? `<span class="acct-name">${esc(a.nickname || shortUid(a.uid))}</span>`
       : `<span class="acct-name editable" title="点击修改显示名" onclick="openRename('${a.uid}','${esc(a.nickname || shortUid(a.uid)).replace(/'/g, "&#39;")}')">${esc(a.nickname || shortUid(a.uid))}</span>`;
 
+    // 「调用中 / 最近用过」徽标。HTML 由 liveTagHtml 统一生成，
+    // renderAccounts 与 pollInUse 共用，避免两处写法漂移。
+    //
+    // in_use 由后端按 pool.InUseWindow 推断（流式调用无结束信号，用时间窗近似）。
+    // 前端不做时间推算 —— 面板可能因后台标签页节流而刷新变慢，本地算时间会与后端口径漂移。
+    const liveTag = `<span class="acct-live-slot">${liveTagHtml(a)}</span>`;
+
     return `
-    <div class="acct-card${disabledClass}${coolingClass}">
+    <div class="acct-card${disabledClass}${coolingClass}${a.in_use ? " in-use" : ""}" data-uid="${esc(a.uid)}">
       <div class="acct-top">
         <div>
           <span class="badge ${group}">${groupName}</span>
           ${nameHtml}
+          ${liveTag}
         </div>
         <div class="acct-ops">
           ${ops}
@@ -1956,6 +2001,13 @@ function afterStateReady() {
   setInterval(loadStats, STATS_POLL_MS);
   loadAppLog();
   setInterval(loadAppLog, APPLOG_POLL_MS);
+  // 「调用中」徽标：2s 一跳。
+  //
+  // 2s 而非更短：后端 InUseWindow 是 5s，2s 采样能稳定捕获状态变化，
+  // 又不至于把请求打得太密（面板常驻开着）。pollInUse 只改徽标不重建 DOM，
+  // 代价很小。
+  pollInUse();
+  setInterval(pollInUse, INUSE_POLL_MS);
 })();
 
 // ---------- 用量与流水面板 ----------
@@ -2181,6 +2233,7 @@ function bindUsage() {
 // ---------- 运行统计面板（第三个主 tab；数据来自 internal/stats 引擎的 /api/stats） ----------
 const STATS_POLL_MS = 30000;   // 统计/请求日志轮询周期
 const APPLOG_POLL_MS = 15000;  // 运行日志（app.log）轮询周期
+const INUSE_POLL_MS = 2000;    // 「调用中」徽标轮询周期（后端 InUseWindow=5s，取其一半以稳定采样）
 const APPLOG_MAX_LINES = 200;  // 渲染上限（上游 /api/logs 最多回 300 行，前端再多不渲染）
 const STATS_LOGS_URL = "/api/stats/logs?limit=15";
 const TOAST_SEEN_KEY = "stats-toast-seen"; // 里程碑 toast 已读去重（localStorage，防每轮轮询重复弹）
