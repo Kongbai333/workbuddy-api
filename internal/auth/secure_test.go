@@ -41,14 +41,17 @@ func TestSecretRoundTrip(t *testing.T) {
 
 // TestParseDecryptsDPAPIToken ★ 本文件的核心回归用例。
 //
-// 场景（2026-10-11 实测故障）：使用 `--import-from` 从旧项目导入 auths 目录后，
-// 面板所有账号积分显示为 0。日志里 workbuddy 账号返回 openresty 的 **401 HTML**，
+// 场景（2026-10-11 实测故障）：账号凭据文件（无论来自手工复制还是旧的
+// `--import-from` 导入——该功能现已移除）里，Windows 上 token 是 DPAPI
+// 加密的（`dpapi:` 前缀），若解析时不解密，面板所有账号积分显示为 0。
+// 日志里 workbuddy 账号返回 openresty 的 **401 HTML**，
 // traework 返回业务 401（refresh token is invalid）。
 //
-// 根因：旧项目在 Windows 上用 DPAPI 加密 token（`dpapi:` 前缀），而本项目当时
-// 没有解密步骤，把 "dpapi:AQAAANCM..." 原样当作 Bearer token 发出去。
+// 根因：把 "dpapi:AQAAANCM..." 原样当作 Bearer token 发出去。
 //
 // 本用例断言 Parse 必须把密文解成明文，防止这个缺陷回归。
+// 注意用例与「凭据从哪来」无关 —— 即使用户手工放置 auths/*.json，
+// 也可能拿到旧项目导出的 DPAPI 密文，故该路径必须始终正确。
 func TestParseDecryptsDPAPIToken(t *testing.T) {
 	if !platformEncrypts() {
 		t.Skip("当前平台不加密（非 Windows），该场景由 secure_other_test.go 覆盖")

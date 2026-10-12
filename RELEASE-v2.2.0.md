@@ -81,6 +81,9 @@
 
 **全量校验**：`go build ./... && go vet ./... && go test ./...` 全绿。
 
-**构建**：`GOOS=windows CGO_ENABLED=0 go build -ldflags "-H windowsgui" -o dist/wild-work.exe ./cmd/wild-work`
+**构建**（历史记录，wild-work 时代）：`GOOS=windows CGO_ENABLED=0 go build -ldflags "-H windowsgui" -o dist/wild-work.exe ./cmd/wild-work`
+
+> 现项目的发布构建统一用 `bash scripts/build_release.sh`（含 -trimpath，
+> 避免把编译机的绝对路径带进产物）。
 
 **该版本无配置格式变更**：config.json 与 state-*.json 兼容 v2.0.x / v2.1.x。

@@ -208,7 +208,7 @@ type Upstream interface {
 
 ```bash
 # Windows（WSL 交叉编译）
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-H windowsgui" -o dist/workbuddy-api.exe ./cmd/workbuddy-api
+bash scripts/build_release.sh          # 发布用构建（含 -trimpath -s -w + 产物自检）
 
 # macOS（需要 macOS 真机或 CI，cgo 必需）
 GOOS=darwin GOARCH=arm64 go build -o dist/workbuddy-api-darwin ./cmd/workbuddy-api
@@ -339,7 +339,7 @@ const (
 
 ```bash
 go build ./... && go vet ./... && go test ./...     # 全量校验
-GOOS=windows CGO_ENABLED=0 go build -ldflags "-H windowsgui" -o dist/workbuddy-api.exe ./cmd/workbuddy-api
+bash scripts/build_release.sh          # 发布用构建（含 -trimpath -s -w + 产物自检）
 ./workbuddy-api --no-tray                                # 无头模式调试
 ```
 

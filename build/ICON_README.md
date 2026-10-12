@@ -14,7 +14,7 @@ python build/make_icon.py          # → build/windows/icon.ico + icon_preview.p
 python build/make_syso.py          # → cmd/workbuddy-api/rsrc_windows_amd64.syso
 
 # 3. 构建 + 校验（校验不过就别发布）
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-H windowsgui" -o dist/workbuddy-api.exe ./cmd/workbuddy-api
+bash scripts/build_release.sh          # 发布用构建（含 -trimpath -s -w + 产物自检）
 python build/check_res.py cmd/workbuddy-api/rsrc_windows_amd64.syso dist/workbuddy-api.exe
 ```
 
