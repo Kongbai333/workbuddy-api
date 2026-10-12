@@ -644,6 +644,9 @@ function renderFees(fees) {
   renderFees.lastData = fees;
   const box = $("feesBox");
   const channels = fees.channels || [];
+  // 「显示隐藏模型」开关状态要反映到按钮上：每次重渲染都同步（切 tab、搜索都会走到这里），
+  // 否则开关在重新拉数据后会视觉回退成未按下，与实际筛选状态不一致。
+  syncShowAllBtn();
 
   if (channels.length === 0) {
     box.innerHTML = `<div class="note">${esc(fees.note || "")}</div>
@@ -755,9 +758,17 @@ function renderFees(fees) {
 
   html += `<div class="fees-tabs">`;
   for (const ch of channels) {
-    // 计数与表格口径保持一致：只算上游提供了倍率的模型。
-    // 若这里仍计总数，用户会看到 tab 上的数字与表格行数对不上。
-    const n = (ch.models || []).filter((m) => m && m.priced).length;
+    // tab 上的数字必须与表里**实际行数**同口径，否则用户按数字核对会以为漏了模型。
+    // 三种口径（与下方表格筛选逻辑一一对应，改一处必须同步另一处）：
+    //   搜索态  → 本渠道命中数（0 表示该渠道无命中，正是搜索时判断该看哪个 tab 的信号）
+    //   展开态  → 全部模型数
+    //   默认态  → 仅上游给了倍率的模型数
+    // 早期版本搜索态仍显示默认态计数（搜出 2 行却标 20），看着像「模型清单不全」。
+    const all = ch.models || [];
+    const searching = !!feeQuery();
+    const n = searching
+      ? all.filter((m) => m && feeMatch(ch.channel, m)).length
+      : all.filter((m) => m && (m.priced || showAllModels())).length;
     const on = ch.channel === active ? " active" : "";
     // 渠道积分余额角标：取自 state.accounts（与积分汇总条同源），
     // 让用户在选择渠道时即可看到「这个渠道还有多少积分可用」。
@@ -775,13 +786,17 @@ function renderFees(fees) {
     // 本表的用途是「比价」：没有倍率的模型（unknown）在这里没有信息量，
     // 且多为上游的内部/子代理模型（browser_use_subagent、computer_use_subagent 等，
     // 它们本就不按 token 计费，所以费率接口不返回）。
-    // 因此只渲染有倍率的行，隐藏数量在表下注明 —— 避免用户以为模型清单缺了东西：
+    // 因此默认只渲染有倍率的行，隐藏数量在表下注明 —— 避免用户以为模型清单缺了东西：
     // 接口与客户端看到的始终是完整清单（/v1/models 不受影响）。
-    // 搜索态：额外保留「倍率 unknown」的条目 —— 用户搜的就是具体模型，
-    // 哪怕没倍率也该让他看到（并明确标注 unknown），否则搜了等于没搜。
+    // 「显示隐藏模型」开关打开后，这些模型一并显示（用户要的是**完整清单**，比如
+    // 确认某个子代理模型到底存不存在），此时不再需要隐藏说明。
+    //
+    // 搜索态无条件显示命中项：用户搜的就是具体模型，没倍率也该看到
+    // （并明确标注 unknown），否则搜了等于没搜。此时按钮不参与筛选 ——
+    // 搜索结果已是全部命中项，再叠加开关只会让用户以为按钮失灵。
     const searching = !!feeQuery();
     const models = searching ? all.filter((m) => m && feeMatch(ch.channel, m))
-                             : all.filter((m) => m && m.priced);
+                             : all.filter((m) => m && (m.priced || showAllModels()));
     const unpriced = all.length - all.filter((m) => m && m.priced).length;
     const hidden = ch.channel !== active ? ' class="hidden"' : '';
     html += `<div class="fees-panel${hidden ? ' hidden' : ''}" data-feepanel="${esc(ch.channel)}">`;
@@ -798,13 +813,68 @@ function renderFees(fees) {
     }
     html += `</tbody></table>`;
     if (!searching && unpriced > 0) {
-      html += `<div class="note" style="margin-top:6px">本渠道另有 ${unpriced} 个模型上游未提供倍率（多为内部/子代理模型），已从本表隐藏；接口与客户端不受影响，仍可正常调用。</div>`;
+      html += showAllModels()
+        ? `<div class="note" style="margin-top:6px">上方标「上游未返回」的 ${unpriced} 个模型倍率缺失（多为内部/子代理模型），仍可正常调用，只是无法比价。</div>`
+        : `<div class="note" style="margin-top:6px">本渠道另有 ${unpriced} 个模型上游未提供倍率（多为内部/子代理模型），已从本表隐藏；接口与客户端不受影响，仍可正常调用。点上方「显示隐藏模型」可展开。</div>`;
     }
     html += `</div>`;
   }
 
   html += `<div class="note" style="margin-top:8px">${esc(fees.disclaimer || "")}</div>`;
   box.innerHTML = html;
+}
+
+// ---- 「显示隐藏模型」开关 ----
+//
+// 默认态只列上游给了倍率的模型（比价表要干净）。但「干净」的代价是用户
+// 无法确认某些模型**是否存在** —— 比如 browser_use_subagent 这类内部/子代理
+// 模型，只在隐藏列表里出现过一次，用户会怀疑自己记错了。
+// 这个开关把完整清单交还给用户，同时保持默认态不变（多数人不需要它）。
+//
+// 持久化到 localStorage：这是**用户的阅读偏好**（临时看一眼 vs 长期对照清单），
+// 每次开面板重新点一遍没有意义。
+const SHOW_ALL_KEY = "fees-show-all";
+
+// showAllModels 当前是否展开隐藏模型。
+function showAllModels() {
+  try { return localStorage.getItem(SHOW_ALL_KEY) === "1"; } catch (e) { return false; }
+}
+
+function setShowAllModels(on) {
+  try { localStorage.setItem(SHOW_ALL_KEY, on ? "1" : "0"); } catch (e) { /* 忽略 */ }
+  syncShowAllBtn();
+}
+
+// syncShowAllBtn 把开关状态反映到按钮外观与文案。
+// 文案带数量：用户点之前就知道会多出多少行，避免点开才发现是几十个内部模型。
+function syncShowAllBtn() {
+  const btn = $("btnShowAllModels");
+  if (!btn) return;
+  const on = showAllModels();
+  btn.classList.toggle("on", on);
+  let hidden = 0;
+  const data = renderFees.lastData;
+  if (data) {
+    for (const ch of data.channels || []) {
+      for (const m of ch.models || []) if (m && !m.priced) hidden++;
+    }
+  }
+  btn.textContent = on ? "隐藏无倍率模型" : "显示隐藏模型";
+  btn.title = on
+    ? `当前已显示全部 ${hidden} 个无倍率模型。点击收起，仅保留有倍率的可比价项`
+    : `上游有 ${hidden} 个模型未提供倍率（多为内部/子代理模型），默认隐藏。点击可查看完整清单`;
+}
+
+// toggleShowAllModels 点击切换并重渲染。
+function toggleShowAllModels() {
+  const next = !showAllModels();
+  setShowAllModels(next);
+  // 清掉搜索词：搜索态下开关不参与筛选（结果已是全部命中项），
+  // 保留搜索词会让切换看起来「完全没反应」，是典型的交互误导。
+  const el = $("feeSearch");
+  if (el && el.value) el.value = "";
+  const data = renderFees.lastData;
+  if (data) renderFees(data);
 }
 
 // ---- 费率表搜索 ----
@@ -1770,6 +1840,7 @@ function bind() {
   $("btnCancelLogin").onclick = cancelLogin;
   $("btnRefreshFees").onclick = refreshFees;
   $("btnExportModels").onclick = exportModelsJson;
+  $("btnShowAllModels").onclick = toggleShowAllModels;
   $("feeSearch").addEventListener("input", applyFeeSearch);
   $("btnMjConfirm").onclick = confirmModelsJson;
   $("btnMjCancel").onclick = closeModelsJson;

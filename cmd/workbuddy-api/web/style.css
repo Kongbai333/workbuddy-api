@@ -84,6 +84,9 @@ body {
 /* 按钮 */
 .btn { border: 1px solid var(--border); background: var(--card); color: var(--text); padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 14px; transition: all .15s; }
 .btn:hover { background: #f0f2f5; }
+/* 开关型按钮的按下态：底色 + 边框同时变化，只靠颜色浅淡区分不清，
+   hover 态又会覆盖，所以这里同时给边框加粗色以保证任何底色下都可见。 */
+.btn.on { background: #eff6ff; border-color: var(--primary); color: var(--primary); font-weight: 600; }
 .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
 .btn.primary:hover { background: var(--primary-hover); }
 .btn.primary.alt { background: #0891b2; border-color: #0891b2; }
