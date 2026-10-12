@@ -83,6 +83,57 @@ def _group_by_type(leaves):
     return by
 
 
+def _check_tree_shape(leaves):
+    """校验资源树层级是否正确 —— 这是最容易被漏掉、且症状最隐蔽的判据。
+
+    **叶子路径必须恰好 3 层：(type, id, lang)。** 两个方向的错都会导致
+    「构建成功、exe 能启动、资源管理器就是不显示图标」：
+
+    1. **多了层**（`(type, 1, id)`）：Windows `FindResource(RT_ICON, id>1)`
+       找不到 —— id 挂在更下一层；而 GROUP_ICON 的 `GRPICONDIRENTRY.nID`
+       写的是 1..n，整组图标只有 id=1 能解析。
+    2. **少了层**（`(type, id)`，没有 lang）：Windows 的资源查找**按语言 id
+       定位**，缺 lang 层时 `SHGetFileInfoW` 直接返回 FALSE +
+       `ERROR_NO_DATA(1008)`。lang 0 = 中性语言，资源管理器认这个。
+
+    这两种都查不出「资源树非空」——树确实非空，只是形状不对。
+    只有按**深度**判据才能发现。
+
+    返回 (是否通过, 说明文字)。
+    """
+    ok = True
+    depth_hist = {}
+    for path, _lf in leaves:
+        depth_hist[len(path)] = depth_hist.get(len(path), 0) + 1
+    for path, _lf in leaves:
+        if len(path) != 3:
+            ok = False
+            hint = ("少 lang 层 → SHGetFileInfo 报 1008" if len(path) < 3
+                    else "多中间层 → FindResource 找不到 id")
+            print(f"  FAIL: 叶子路径 {'/'.join(map(str, path))} 有 {len(path)} 层，"
+                  f"应为 3 层 (type, id, lang) —— {hint}")
+
+    # lang 层：实测系统 exe（regedit / explorer / mmc）一律用 1033(en-US)，
+    # 用 0（中性语言）会被 SHGetFileInfo 拒绝 → 报 ERROR_NO_DATA(1008)、无图标。
+    # 故这里要求与系统一致。
+    for path, _lf in leaves:
+        if len(path) == 3 and path[2] != 1033:
+            ok = False
+            print(f"  FAIL: lang 应为 1033(en-US，与系统 exe 一致)，实际 {path[2]}")
+            break
+
+    # RT_ICON 的 id 必须是连续的 1..n —— GROUP_ICON 的 nID 按序号索引它们
+    icon_ids = sorted(p[1] for p, _ in leaves if p and p[0] == 3 and len(p) > 1)
+    if icon_ids and icon_ids != list(range(1, len(icon_ids) + 1)):
+        ok = False
+        print(f"  FAIL: RT_ICON 的 id 应为连续 1..{len(icon_ids)}，实际 {icon_ids}")
+
+    desc = (f"叶子层深分布 {depth_hist}（应为全 3）; "
+            f"RT_ICON id={icon_ids[:3]}...{icon_ids[-1:] if icon_ids else []}"
+            f" 共 {len(icon_ids)} 个, lang=1033")
+    return ok, desc
+
+
 def check_syso(path):
     d = open(path, "rb").read()
     machine, nsec, _ts, psym, nsym, optsz, _ch = struct.unpack("<HHIIIHH", d[:20])
@@ -172,6 +223,10 @@ def check_syso(path):
         if t not in by_type:
             print(f"  FAIL: 缺 {RT_NAMES.get(t, t)}")
             ok = False
+
+    shape_ok, shape_desc = _check_tree_shape(leaves)
+    print(f"  树形: {shape_desc}")
+    ok = ok and shape_ok
 
     # 逐个叶子校验：OffsetToData 在界内、对应字段有重定位、内容合法
     data_entries = []
@@ -312,6 +367,10 @@ def check_exe(path):
         if t not in by_type:
             print(f"  FAIL: 缺 {RT_NAMES.get(t, t)}")
             ok = False
+
+    shape_ok, shape_desc = _check_tree_shape(leaves)
+    print(f"  树形: {shape_desc}")
+    ok = ok and shape_ok
 
     # RT_GROUP_ICON
     if 14 in by_type:

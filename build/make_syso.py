@@ -150,45 +150,68 @@ def build_syso(ico_path, syso_path):
     # ---- 组装 .rsrc 节 ----
     n = len(entries)
 
-    # 规划偏移
-    root = 0
     # ── 资源树布局规划 ──────────────────────────────────────────────
     #
-    # Windows 资源树是**三层目录**，不是两层：
+    # PE 规范的资源树：
     #
-    #   根目录（无 id）
-    #     └ type 条目（RT_ICON / RT_GROUP_ICON / RT_VERSION）→ 各占一个「type 目录」
-    #          └ id 条目（通常是 1）              → 各占一个「id 目录」
-    #               └ 叶子条目 → IMAGE_RESOURCE_DATA_ENTRY → 实际数据
+    #   根目录
+    #     └ type 条目（RT_ICON / RT_GROUP_ICON / RT_VERSION）
+    #          └ id 条目                    ← 必需
+    #               └ lang 条目             ← **必需**（中性语言 0）
+    #                    └ 叶子 DATA_ENTRY
     #
-    # 每个目录 = 16 字节头 + 8 字节 × 条目数。
-    # 早先版本把 type 目录当成一层（根 → type目录 → 叶子），
-    # 结果 RT_GROUP_ICON / RT_VERSION 的 type 目录**从未被写入**（全零），
-    # 而校验器报「无叶子条目」。缺这一层是本文件第二个隐蔽 bug。
+    # ## 两个已踩过的坑（症状都是「构建成功、能启动、就是没图标」）
+    #
+    # ### 坑一：type 与 id 之间多插一层
+    # 最初建成 `RT_ICON → id=1 → id=1..9`。后果：Windows 的
+    # FindResource(RT_ICON, id=2) **找不到**（id=2 挂在更下一层，外层 id 恒为 1），
+    # 而 GROUP_ICON 的 GRPICONDIRENTRY.nID 引用的是 1..9 → 整组失效。
+    #
+    # ### 坑二：漏掉 lang 层
+    # 只建到 `type → id → 数据` 就收尾。Windows 的资源查找（SHGetFileInfo、
+    # LoadIcon 等）**按语言 id 定位**，缺 lang 层时
+    # SHGetFileInfoW 直接返回 FALSE + ERROR_NO_DATA(1008)，
+    # 资源管理器因此不显示图标。lang 0 = 中性语言（"与语言无关"），最通用。
+    #
+    # 两个坑都表现为「自己的解析器看着没问题」（树非空、偏移在界内、PNG 合法），
+    # 但 Windows 不认。故校验必须用**深度**判据 + Windows API 实测。
 
     def dir_size(k):
         return align4(16 + 8 * k)
 
     root = 0
+    LANG_ID = 1033            # en-US：与系统 exe 一致（实测 regedit/explorer 都用它）
+
     root_size = dir_size(3)          # 3 个 type 条目
 
-    # 三个 type 目录，每个只有 1 个 id 条目
+    # type 目录：RT_ICON 有 n 个 id，另两个各 1 个
     icon_type_dir = root + root_size
-    group_type_dir = icon_type_dir + dir_size(1)
+    group_type_dir = icon_type_dir + dir_size(n)
     ver_type_dir = group_type_dir + dir_size(1)
 
-    # 三个 id 目录：RT_ICON 有 n 个条目，另两个各 1 个
-    icon_id_dir = ver_type_dir + dir_size(1)
-    group_id_dir = icon_id_dir + dir_size(n)
-    ver_id_dir = group_id_dir + dir_size(1)
+    # lang 层：**每个 id 一个独立的 lang 目录**。
+    #
+    # 为什么不能共用一个：资源目录项的 OffsetToData 指向「子目录的起点」，
+    # 其后连续条目都属该子目录。若 9 个 id 全指向同一个 lang 目录，
+    # 加载器会把整个目录读作每个 id 的子目录 → 每个 id 都遍历出 9 个叶子
+    # （校验器报「RT_ICON id 应连续 1..9，实际重复 9 遍」）。
+    #
+    # 故这里给每个尺寸分配一个只含 1 个 lang 条目的独立目录。
+    icon_lang_base = ver_type_dir + dir_size(1)
+
+    # lang 目录偏移表：每个 id 一个**独立**目录（各 1 个 lang 条目），
+    # 紧接其后是 GROUP_ICON 与 VERSION 的 lang 目录。
+    icon_lang_dirs = [icon_lang_base + dir_size(1) * i for i in range(n)]
+    group_lang_dir = icon_lang_base + dir_size(1) * n
+    ver_lang_dir = group_lang_dir + dir_size(1)
 
     # 叶子：IMAGE_RESOURCE_DATA_ENTRY（各 16 字节），紧跟其后是实际数据
     #
     # 注意每个数据条目之后必须留出**它的数据长度**再放下一个条目，
     # 否则 GROUP_ICON 的 GRPICONDIR 会和 VERSION 的 VS_VERSIONINFO 重叠
     # （症状：RT_VERSION 的 OffsetToData 指向节外，版本信息读出乱码）。
+    group_dataentry = ver_lang_dir + dir_size(1)
     grp_len = align4(6 + 14 * n)      # GRPICONDIR + n 个 GRPICONDIRENTRY(各14B)
-    group_dataentry = ver_id_dir + dir_size(1)
     group_blob = group_dataentry + 16
     ver_data = group_blob + grp_len
     vs_info = build_vs_versioninfo(VERSION_STRING)
@@ -228,25 +251,24 @@ def build_syso(ico_path, syso_path):
     put(root + 16 + 8, entry(IMAGE_RESOURCE_TYPE_GROUP_ICON, True, group_type_dir))
     put(root + 16 + 16, entry(IMAGE_RESOURCE_TYPE_VERSION, True, ver_type_dir))
 
-    # 三个 type 目录：各只有一个 id 条目（id=1）
-    put(icon_type_dir, directory(1))
-    put(icon_type_dir + 16, entry(1, True, icon_id_dir))
-    put(group_type_dir, directory(1))
-    put(group_type_dir + 16, entry(1, True, group_id_dir))
-    put(ver_type_dir, directory(1))
-    put(ver_type_dir + 16, entry(1, True, ver_id_dir))
-
-    # RT_ICON 的 id 目录 → 每个尺寸一个条目（id = 1..n）
-    put(icon_id_dir, directory(n))
+    # ── RT_ICON：type → id(1..n) → 各自独立的 lang(0) 目录 → DATA_ENTRY ──
+    put(icon_type_dir, directory(n))
     for i in range(n):
-        put(icon_id_dir + 16 + 8 * i,
-            entry(i + 1, False, icon_dataentry + 16 * i))
+        ld = icon_lang_dirs[i]
+        put(icon_type_dir + 16 + 8 * i, entry(i + 1, True, ld))
+        put(ld, directory(1))
+        put(ld + 16, entry(LANG_ID, False, icon_dataentry + 16 * i))
 
-    # RT_GROUP_ICON / RT_VERSION 的 id 目录 → 叶子
-    put(group_id_dir, directory(1))
-    put(group_id_dir + 16, entry(1, False, group_dataentry))
-    put(ver_id_dir, directory(1))
-    put(ver_id_dir + 16, entry(1, False, ver_data))
+    # ── RT_GROUP_ICON / RT_VERSION：type → id(1) → lang(0) → DATA_ENTRY
+    put(group_type_dir, directory(1))
+    put(group_type_dir + 16, entry(1, True, group_lang_dir))
+    put(group_lang_dir, directory(1))
+    put(group_lang_dir + 16, entry(LANG_ID, False, group_dataentry))
+
+    put(ver_type_dir, directory(1))
+    put(ver_type_dir + 16, entry(1, True, ver_lang_dir))
+    put(ver_lang_dir, directory(1))
+    put(ver_lang_dir + 16, entry(LANG_ID, False, ver_data))
 
     # GROUP_ICON 数据
     grp = struct.pack("<HHH", 0, 1, n)
