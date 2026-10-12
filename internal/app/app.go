@@ -48,9 +48,15 @@ import (
 
 // Version 版本号。
 //
-// 版本号从 0.1.0 起算。发布新版本时改这一处即可，
-// 构建脚本会从这里读取版本号（macOS 打包、Release 产物名）。
-const Version = "0.1.0"
+// 发布新版本时改这一处即可 —— 它是唯一的版本来源：
+// 面板 logo 旁与「关于」面板的显示（经 /api/state 下发，前端拼 "v" 前缀）、
+// macOS 打包产物名（build/macos/build-app.sh grep 本行）都读这里。
+//
+// ⚠️ 别只改这里就以为发版完成了：exe 里内嵌的 RT_VERSION 资源
+// （cmd/workbuddy-api/rsrc_windows_amd64.syso，由 build/make_syso.py 从
+// icon.ico 生成）也带版本号，须重新生成 —— 见 build/ICON_README.md。
+// 否则文件属性里显示的还是旧版本，与面板显示不一致。
+const Version = "0.1.2"
 
 const (
 	loginTimeout   = 5 * time.Minute

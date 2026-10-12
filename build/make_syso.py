@@ -40,6 +40,7 @@ Windows Vista 起支持在资源条目里直接放 PNG 数据（不用手工构�
 from __future__ import annotations
 
 import os
+import re
 import struct
 import sys
 
@@ -81,16 +82,60 @@ def dir_entry_size():
     return 16
 
 
-def build_vs_versioninfo(name):
+def read_app_version():
+    """从 internal/app/app.go 的 `const Version` 读取版本号。
+
+    ## 为什么不能在这里写死
+
+    版本号有两个必须一致的地方：
+
+      1. 面板 logo 旁与「关于」显示的版本 —— 走 /api/state 下发 app.Version
+      2. 文件属性（资源管理器 → 属性 → 详细信息）里的「文件版本」——
+         来自 exe 内嵌的 RT_VERSION 资源，也就是本脚本生成的这段
+
+    若第 2 处在这里写死（如曾经的 "1.0.0.0"），就会出现「面板写着 v0.1.2，
+    文件属性却是 1.0.0.0」，且**没有任何地方会报错** —— 资源解析完全正常。
+    单一来源是唯一的根治办法：读代码里的常量。
+    """
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "..", "internal", "app", "app.go")
+    with open(src, "r", encoding="utf-8") as f:
+        m = re.search(r'^const Version = "([^"]+)"', f.read(), re.M)
+    if not m:
+        raise SystemExit("✗ 在 internal/app/app.go 里找不到 `const Version = \"...\"`")
+    return m.group(1)
+
+
+def version_to_quad(ver):
+    """'0.1.2' → (0, 1, 2, 0) 四元组。
+
+    缺位补 0（'1.2' → 1.2.0.0）；多于 4 段直接报错而不是静默截断 ——
+    静默截断会产出一个看起来正常、但版本号对不上的资源。
+    """
+    parts = ver.split(".")
+    if len(parts) > 4:
+        raise SystemExit("✗ 版本号段数过多（最多 4 段）：%r" % ver)
+    nums = [int(p) for p in parts] + [0] * (4 - len(parts))
+    for n in nums:
+        if not 0 <= n <= 0xFFFF:
+            raise SystemExit("✗ 版本号分段超出 DWORD 范围：%r" % ver)
+    return tuple(nums)
+
+
+def build_vs_versioninfo(name, version):
     """最小 VS_VERSIONINFO（UTF-16LE，固定长度字段）。"""
     def wstr(s):
         b = s.encode("utf-16-le")
         return struct.pack("<HH", len(b), len(b)) + b + b"\x00\x00"  # 含结尾 NUL
 
+    a, b_, c, d = version_to_quad(version)
+    ver_ms, ver_ls = (a << 16) | b_, (c << 16) | d
+    # Windows 要求的四段式展示：'0.1.2' → '0.1.2.0'
+    quad_text = "%d.%d.%d.%d" % (a, b_, c, d)
+
     # VS_FIXEDFILEINFO：13 个 DWORD（缺一个会让整个资源区解析失败，
     # 表现为「图标不显示」而非报错，极难定位）
     sig = 0xFEEF04BD
-    ver_ms, ver_ls = 0x00010000, 0x00000000       # 1.0.0.0
     ffi = struct.pack("<IIIIIIIIIIIII",
                       sig,                    # dwSignature
                       0x00010000,             # dwStrucVersion
@@ -109,8 +154,8 @@ def build_vs_versioninfo(name):
     children += _version_block("ProductName", name)
     children += _version_block("CompanyName", "")
     children += _version_block("LegalCopyright", "")
-    children += _version_block("FileVersion", "1.0.0.0")
-    children += _version_block("ProductVersion", "1.0.0.0")
+    children += _version_block("FileVersion", quad_text)
+    children += _version_block("ProductVersion", quad_text)
 
     # 头部：wLength, wValueLength, wType, szKey="VS_VERSION_INFO", Value=ffi, Padding, Children
     key = "VS_VERSION_INFO".encode("utf-16-le") + b"\x00\x00"
@@ -214,7 +259,7 @@ def build_syso(ico_path, syso_path):
     grp_len = align4(6 + 14 * n)      # GRPICONDIR + n 个 GRPICONDIRENTRY(各14B)
     group_blob = group_dataentry + 16
     ver_data = group_blob + grp_len
-    vs_info = build_vs_versioninfo(VERSION_STRING)
+    vs_info = build_vs_versioninfo(VERSION_STRING, read_app_version())
     ver_blob = ver_data + 16                     # DATA_ENTRY(16) 之后才是本体
     icon_dataentry = ver_blob + align4(len(vs_info))
     icon_blob = icon_dataentry + 16 * n
