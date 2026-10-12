@@ -188,3 +188,54 @@ func TestBadDuration(t *testing.T) {
 		t.Fatal("want error for bad duration")
 	}
 }
+
+// TestStrategyDefaultAndNormalize 默认策略是 expire（临期优先），
+// 空串/大小写/空白都能归一，非法值必须报错而不是静默回落。
+//
+// 为什么非法值报错：静默回落会让用户以为切到了 roundrobin，
+// 实际却在跑 expire —— 表现为「设置没生效」且极难自查。
+func TestStrategyDefaultAndNormalize(t *testing.T) {
+	if got := Default().Strategy; got != "expire" {
+		t.Fatalf("默认策略=%q，应为 expire", got)
+	}
+	for _, in := range []string{"credits", "CREDITS", " roundrobin ", "Expire"} {
+		c := Default()
+		c.Strategy = in
+		if err := c.normalize(); err != nil {
+			t.Fatalf("normalize(%q): %v", in, err)
+		}
+		want := map[string]string{"credits": "credits", "CREDITS": "credits",
+			" roundrobin ": "roundrobin", "Expire": "expire"}[in]
+		if c.Strategy != want {
+			t.Errorf("normalize(%q)=%q want %q", in, c.Strategy, want)
+		}
+	}
+	// 空串 → 默认
+	c := Default()
+	c.Strategy = ""
+	if err := c.normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if c.Strategy != "expire" {
+		t.Errorf("空串策略=%q，应归一为 expire", c.Strategy)
+	}
+	// 非法值报错
+	c = Default()
+	c.Strategy = "balance"
+	if err := c.normalize(); err == nil {
+		t.Error("非法 strategy 应报错而非静默回落")
+	}
+}
+
+// TestStrategyEnvOverride 环境变量可覆盖 strategy（容器部署走这条路）。
+func TestStrategyEnvOverride(t *testing.T) {
+	t.Setenv("WILDWORK_STRATEGY", "roundrobin")
+	c := Default()
+	applyEnv(c)
+	if err := c.normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if c.Strategy != "roundrobin" {
+		t.Fatalf("env 未生效: %q", c.Strategy)
+	}
+}

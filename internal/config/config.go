@@ -112,6 +112,10 @@ type Config struct {
 	StateFile string `json:"state_file"`     // ./data/state.json
 	Region    string `json:"region"`         // 只收 "cn"
 
+	// Strategy 账号挑选策略：expire（临期优先，默认）/ credits（优先积分）/ roundrobin（负载均衡）。
+	// 空串视为 expire。非法值在 normalize 时报错（面板只给三个合法选项）。
+	Strategy string `json:"strategy,omitempty"`
+
 	Cooldown struct {
 		HardCredit  string `json:"hard_credit"`   // "12h"
 		SoftRate    string `json:"soft_rate"`     // "60s"
@@ -200,6 +204,7 @@ func Default() *Config {
 		AuthDir:   "./auths",
 		StateFile: "./data/state.json",
 		Region:    "cn",
+		Strategy:  "expire",
 	}
 	c.Cooldown.HardCredit = "12h"
 	c.Cooldown.SoftRate = "60s"
@@ -352,6 +357,9 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("WILDWORK_REGION"); v != "" {
 		c.Region = v
 	}
+	if v := os.Getenv("WILDWORK_STRATEGY"); v != "" {
+		c.Strategy = v
+	}
 	if v := os.Getenv("WILDWORK_HARD_CREDIT"); v != "" {
 		c.Cooldown.HardCredit = v
 	}
@@ -437,6 +445,17 @@ func (c *Config) normalize() error {
 	c.Region = strings.ToLower(c.Region)
 	if c.Region != "cn" && c.Region != "global" {
 		return fmt.Errorf("region must be cn or global, got %q", c.Region)
+	}
+	// 挑号策略：空串 → 默认 expire；显式非法值必须报错而不是静默回落
+	// （静默回落会让用户以为切到了 roundrobin，实际却在跑 expire）。
+	s := strings.ToLower(strings.TrimSpace(c.Strategy))
+	switch s {
+	case "":
+		c.Strategy = "expire"
+	case "expire", "credits", "roundrobin":
+		c.Strategy = s
+	default:
+		return fmt.Errorf("strategy must be one of expire/credits/roundrobin, got %q", c.Strategy)
 	}
 	// 兼容旧版 checkin_hours；新版本统一规范化为 HH:MM。
 	if len(c.Schedule.CheckinTimes) == 0 {

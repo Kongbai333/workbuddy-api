@@ -42,6 +42,11 @@ const BROWSER = process.env.PANEL_BROWSER ||
   await page.goto(URL, { waitUntil: 'networkidle', timeout: 30000 });
   await page.waitForSelector('.acct-card', { timeout: 15000 }).catch(() => {});
 
+  // 打开设置面板：策略下拉的候选是在 openSettings() 里由 state 渲染的，
+  // 不打开对话框就查不到（会误判成"下拉是空的"）。
+  await page.click('#btnSettings').catch(() => {});
+  await page.waitForTimeout(600);
+
   const info = await page.evaluate(() => ({
     stateLoaded: (typeof state !== 'undefined' && state !== null),
     accounts: (typeof state !== 'undefined' && state) ? (state.accounts || []).length : -1,
@@ -53,6 +58,13 @@ const BROWSER = process.env.PANEL_BROWSER ||
     checkinAllBound: !!document.getElementById('btnCheckinAll').onclick,
     refreshAllBound: !!document.getElementById('btnRefreshAll').onclick,
     settingsBound: !!document.getElementById('btnSettings').onclick,
+    // 设置面板里的挑号策略下拉：必须由后端下发的候选渲染，且有选中项与说明文案
+    strategyOptions: document.getElementById('selStrategy')
+      ? document.getElementById('selStrategy').options.length : 'missing',
+    strategyValue: document.getElementById('selStrategy')
+      ? document.getElementById('selStrategy').value : 'missing',
+    strategyDesc: (document.getElementById('strategyDesc') || {}).textContent || '',
+    strategyBound: !!document.getElementById('selStrategy').onchange,
   }));
 
   await browser.close();
@@ -73,13 +85,22 @@ const BROWSER = process.env.PANEL_BROWSER ||
     bad.push('部分按钮未绑定（bind() 可能中途抛错）');
   }
   if (errors.length) bad.push('有 ' + errors.length + ' 条控制台错误');
+  if (info.strategyOptions !== 3) {
+    bad.push('挑号策略下拉应有 3 项（expire/credits/roundrobin），实际 ' + info.strategyOptions);
+  }
+  if (!['expire', 'credits', 'roundrobin'].includes(info.strategyValue)) {
+    bad.push('挑号策略下拉没有合法选中项：' + info.strategyValue);
+  }
+  if (!info.strategyDesc) bad.push('挑号策略说明文案为空');
+  if (!info.strategyBound) bad.push('挑号策略下拉未绑定 onchange（说明文案不会随选择更新）');
 
   if (bad.length) {
     console.log('\n❌ 失败：' + bad.join('；'));
     process.exit(1);
   }
   console.log('\n✅ 通过：账号卡片 ' + info.cards + ' 张，一键做任务可用，★ 入口 ' +
-    info.starBtns + ' 个，无控制台错误');
+    info.starBtns + ' 个，挑号策略 ' + info.strategyValue +
+    '（' + info.strategyOptions + ' 项），无控制台错误');
 })().catch((e) => {
   console.error('❌ 脚本执行失败：', e && e.message ? e.message : e);
   process.exit(2);

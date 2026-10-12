@@ -1350,6 +1350,12 @@ function openSettings() {
   // 自动签到 + 开机自启 + 临期阈值
   $("chkAutostart").checked = !!state.autostart;
   $("selExpiring").value = String(state.expiring_days || 1);
+  // 挑号策略（下拉由后端下发候选，避免前后端两份枚举各写一遍）
+  const opts = state.strategy_options || [];
+  $("selStrategy").innerHTML = opts.map(o =>
+    `<option value="${o.value}" title="${esc(o.desc)}">${esc(o.label)}</option>`).join("");
+  $("selStrategy").value = state.strategy || "expire";
+  syncStrategyDesc();
   // 成长中心自动化开关（默认全关）
   const g = state.growth || {};
   $("chkGrowthRedeem").checked = !!g.redeem_streak;
@@ -1363,6 +1369,13 @@ function openSettings() {
 
 function closeSettings() {
   $("settingsOverlay").classList.add("hidden");
+}
+
+// syncStrategyDesc 按当前选中的策略刷新说明文案。
+function syncStrategyDesc() {
+  const opts = state?.strategy_options || [];
+  const cur = opts.find(o => o.value === $("selStrategy").value);
+  $("strategyDesc").textContent = cur ? cur.desc : (state?.strategy_desc || "");
 }
 
 // validateProxies 收集代理输入并做本地形态校验，返回 {proxies, err}。
@@ -1429,6 +1442,14 @@ async function saveSettings() {
   if (expDays !== (state.expiring_days || 1)) {
     try {
       await api("/api/config/expiring_days", { days: expDays });
+    } catch (e) { toast(e.message); return; }
+  }
+
+  // 4.5) 挑号策略（热更新到各渠道账号池，无需重启）
+  const strategy = $("selStrategy").value;
+  if (strategy && strategy !== (state.strategy || "expire")) {
+    try {
+      await api("/api/config/strategy", { strategy });
     } catch (e) { toast(e.message); return; }
   }
 
@@ -1623,6 +1644,7 @@ function bind() {
   $("btnCancelLogin").onclick = cancelLogin;
   $("btnRefreshFees").onclick = refreshFees;
   $("chkAutostart").onchange = toggleAutostart;
+  $("selStrategy").onchange = syncStrategyDesc;
   $("btnAdminLogout").onclick = () => logout();
   $("btnClearAdminPass").onclick = clearAdminPassword;
   $("btnAdminLogin").onclick = submitLogin;

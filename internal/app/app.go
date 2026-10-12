@@ -1644,6 +1644,31 @@ func (a *App) SetExpiringDays(days int) error {
 	return nil
 }
 
+// SetStrategy 更新挑号策略：保存配置并热更新到所有渠道的池（无需重启）。
+//
+// 非法值直接报错而不是回落默认 —— 面板只给三个合法选项，
+// 而配置文件/环境变量被手改时若静默回落，用户会以为切成功了。
+func (a *App) SetStrategy(name string) error {
+	s, ok := pool.ParseStrategy(name)
+	if !ok {
+		return errors.New("挑号策略仅支持：expire（临期优先）/ credits（优先积分）/ roundrobin（负载均衡）")
+	}
+	a.mu.Lock()
+	a.cfg.Strategy = string(s)
+	err := config.Save(a.cfg, a.cfgPath)
+	a.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	for _, rt := range a.runtimes {
+		if rt != nil && rt.Pool != nil && !rt.Alias {
+			rt.Pool.SetStrategy(s)
+		}
+	}
+	log.Printf("账号挑选策略已切换：%s", s.Label())
+	return nil
+}
+
 // SetListen 修改 API 监听主机 + 端口：保存配置并热切换监听。
 func (a *App) SetListen(host string, port int) error {
 	if port <= 0 || port > 65535 {
@@ -1895,15 +1920,38 @@ type AccountView struct {
 	Growth bool `json:"growth,omitempty"`
 }
 
+// StrategyOption 前端下拉的一项（值 + 中文名 + 说明）。
+type StrategyOption struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+	Desc  string `json:"desc"`
+}
+
+// strategyOptions 生成策略下拉的候选列表（顺序即面板显示顺序）。
+func strategyOptions() []StrategyOption {
+	out := make([]StrategyOption, 0, len(pool.AllStrategies))
+	for _, s := range pool.AllStrategies {
+		out = append(out, StrategyOption{Value: string(s), Label: s.Label(), Desc: s.Desc()})
+	}
+	return out
+}
+
 // State Web UI 初始数据。
 type State struct {
 	Accounts       []AccountView `json:"accounts"`
 	CheckinTimes   []string      `json:"checkin_times"`
 	KeepaliveHours []int         `json:"keepalive_hours"`
 	ExpiringDays   int           `json:"expiring_days"` // 临期阈值（天），仅支持 1/2/3
-	ListenHost     string        `json:"listen_host"`
-	ListenPort     int           `json:"listen_port"`
-	APIKey         string        `json:"api_key"`
+
+	// Strategy 账号挑选策略（expire/credits/roundrobin），StrategyOptions 供前端下拉。
+	Strategy        string           `json:"strategy"`
+	StrategyLabel   string           `json:"strategy_label"`
+	StrategyDesc    string           `json:"strategy_desc"`
+	StrategyOptions []StrategyOption `json:"strategy_options"`
+
+	ListenHost string `json:"listen_host"`
+	ListenPort int    `json:"listen_port"`
+	APIKey     string `json:"api_key"`
 
 	// AdminPassSet 是否已配置管理密码（不回显密码本身）；
 	// AuthEnabled = 面板鉴权已生效（密码非空）；
@@ -1975,6 +2023,11 @@ func (a *App) GetState() State {
 		LanIP:          lanIP(),
 		ExpiringDays:   int(a.cfg.ExpiringThresholdDur / (24 * time.Hour)),
 	}
+	cur, _ := pool.ParseStrategy(a.cfg.Strategy)
+	st.Strategy = string(cur)
+	st.StrategyLabel = cur.Label()
+	st.StrategyDesc = cur.Desc()
+	st.StrategyOptions = strategyOptions()
 	st.Compat.DefaultChannel = a.cfg.Compat.DefaultChannel
 	st.Compat.MaxTokensCap = a.cfg.Compat.MaxTokensCap
 	st.Compat.ModelMap = a.cfg.Compat.ModelMap
@@ -2302,6 +2355,20 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		if err := a.SetExpiringDays(req.Days); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+	mux.HandleFunc("POST /api/config/strategy", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Strategy string `json:"strategy"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			apiError(w, http.StatusBadRequest, "请求格式错误")
+			return
+		}
+		if err := a.SetStrategy(req.Strategy); err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}

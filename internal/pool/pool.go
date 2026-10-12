@@ -116,10 +116,15 @@ func (e *entry) healthyForModel(now time.Time, model string) bool {
 // 缺失/零值视为 1（保持向后兼容：老文件不报错）。
 type stateFile struct {
 	Version  int                     `json:"version,omitempty"`
+	RRLast   string                  `json:"rr_last,omitempty"` // roundrobin 游标：上次选中的 uid
 	Accounts map[string]accountState `json:"accounts"`
 }
 
-// stateVersion 当前状态文件格式版本。v2: unusable（可用/不可用拆分）；v3: expiring（临期额度）。
+// stateVersion 当前**余额口径**版本。v2: unusable（可用/不可用拆分）；v3: expiring（临期额度）。
+//
+// ⚠️ 只在「余额字段的语义/集合发生变化」时才 +1 —— 读入时 `Version < stateVersion`
+// 会把所有账号标记为 creditsStale（面板显示「待刷新」）。纯附加字段（如 rr_last）
+// **不能**动这个常量，否则每次加个无关字段就会让全部账号的余额口径变成不可信。
 const stateVersion = 3
 
 type accountState struct {
@@ -140,11 +145,15 @@ type Pool struct {
 	mu      sync.RWMutex
 	byUID   map[string]*entry
 	stateFp string
+	// strategy 挑号策略（见 strategy.go）。零值按 StrategyExpire 解释。
+	strategy Strategy
+	// rrLast roundrobin 游标：上次选中的 uid。落盘，重启后继续往下轮。
+	rrLast string
 }
 
 // New 构建池；stateFp 非空时尝试加载旧状态。
 func New(stateFp string) *Pool {
-	p := &Pool{byUID: map[string]*entry{}, stateFp: stateFp}
+	p := &Pool{byUID: map[string]*entry{}, stateFp: stateFp, strategy: StrategyExpire}
 	if stateFp != "" {
 		p.load()
 	}
@@ -182,17 +191,12 @@ func (p *Pool) SyncToDir(auths []*auth.Auth) {
 	}
 }
 
-// Pick 返回 healthy 中积分最高的账号；无可用返回 nil。
-// 排序两级：先按临期额度（消耗快过期的），同组内再按总可用余额。
-// 临期与总可用均为 0 视为无额度，排序仍正确。
+// Pick 返回按当前策略挑出的账号；无可用返回 nil。
 func (p *Pool) Pick() *auth.Auth {
 	return p.PickExcluding(nil)
 }
 
 // PickExcluding 同上，但跳过 tried 中的 uid（请求级轮换）。
-// 比较键：expiring 降序 → credits 降序。临期>0 的账号恒排在临期=0 之前，
-// 即使后者总余额更高——目的是优先烧掉快过期的积分，避免浪费。
-// expiring 仅统计可消耗额度，且 expiring ≤ credits，不会出现虚高。
 func (p *Pool) PickExcluding(tried map[string]bool) *auth.Auth {
 	return p.PickExcludingForModel(tried, "")
 }
@@ -205,11 +209,37 @@ func (p *Pool) PickForModel(model string) *auth.Auth {
 }
 
 // PickExcludingForModel 同 PickExcluding，但额外跳过「该模型处于模型级冷却」的账号。
+//
+// 按当前 Strategy 挑号（见 strategy.go）。roundrobin 需要写游标，
+// 故这里用写锁而不是基线的读锁 —— 挑选在每次请求的头部发生，锁持有时间极短。
+//
+// ⚠️ tried 排空后**必须**返回 nil，不能回退到全体账号：调用方
+// （server/handler.go 的 MaxRotate 循环）正是靠 nil 判定「已轮完一圈，结束重试」。
+// 一旦这里回退，循环会拿到已试过的账号并继续，错误被重复触发且永不退出。
 func (p *Pool) PickExcludingForModel(tried map[string]bool, model string) *auth.Auth {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	now := time.Now()
-	var best *entry
+
+	cands := p.candidates(now, tried, model)
+	if len(cands) == 0 {
+		return nil
+	}
+
+	switch p.strategy {
+	case StrategyRoundRobin:
+		return p.pickRoundRobinLocked(cands)
+	case StrategyCredits:
+		return p.pickCreditsLocked(cands)
+	default: // StrategyExpire（默认）
+		return p.pickExpireLocked(cands)
+	}
+}
+
+// candidates 收集当前可用账号（未禁用、未冷却、不在 tried、模型未冷却）。
+// 调用方需持有 p.mu。
+func (p *Pool) candidates(now time.Time, tried map[string]bool, model string) []*entry {
+	out := make([]*entry, 0, len(p.byUID))
 	for uid, e := range p.byUID {
 		if tried != nil && tried[uid] {
 			continue
@@ -217,22 +247,102 @@ func (p *Pool) PickExcludingForModel(tried map[string]bool, model string) *auth.
 		if !e.healthyForModel(now, model) {
 			continue
 		}
-		if best == nil || entryBetter(e, best) {
+		out = append(out, e)
+	}
+	return out
+}
+
+// pickCreditsLocked 优先积分：可用余额最多者；同分取 UID 较小者（稳定排序，
+// 避免同分账号因 map 遍历顺序随机漂移）。
+func (p *Pool) pickCreditsLocked(cands []*entry) *auth.Auth {
+	best := cands[0]
+	for _, e := range cands[1:] {
+		if e.credits > best.credits ||
+			(e.credits == best.credits && e.a.UID < best.a.UID) {
 			best = e
 		}
-	}
-	if best == nil {
-		return nil
 	}
 	return best.a
 }
 
-// entryBetter e 是否应排在 b 之前（路由优先级更高）：临期降序 → 总可用降序。
+// pickExpireLocked 临期优先：临期额度多者先烧（expiring 降序 → credits 降序 → UID）。
+//
+// 临期>0 的账号恒排在临期=0 之前，即使后者总余额更高——目的是优先烧掉快过期的
+// 积分。expiring 仅统计可消耗额度，且 expiring ≤ credits，不会虚高。
+//
+// 这就是基线 wild-work 里写死的比较键，作为默认策略保留（升级不改变选号行为）。
+func (p *Pool) pickExpireLocked(cands []*entry) *auth.Auth {
+	best := cands[0]
+	for _, e := range cands[1:] {
+		if e.expiring != best.expiring {
+			if e.expiring > best.expiring {
+				best = e
+			}
+			continue
+		}
+		if e.credits != best.credits {
+			if e.credits > best.credits {
+				best = e
+			}
+			continue
+		}
+		if e.a.UID < best.a.UID {
+			best = e
+		}
+	}
+	return best.a
+}
+
+// pickRoundRobinLocked 负载均衡：按 UID 排序后从上次选中项的下一个开始轮转。
+//
+// 游标随请求推进并落盘：重启后继续从上次位置往下轮，而不是从头开始。
+func (p *Pool) pickRoundRobinLocked(cands []*entry) *auth.Auth {
+	sort.Slice(cands, func(i, j int) bool { return cands[i].a.UID < cands[j].a.UID })
+	start := 0
+	if p.rrLast != "" {
+		for i, e := range cands {
+			if e.a.UID == p.rrLast {
+				start = (i + 1) % len(cands)
+				break
+			}
+		}
+	}
+	chosen := cands[start]
+	p.rrLast = chosen.a.UID
+	p.saveLocked()
+	return chosen.a
+}
+
+// entryBetter e 是否应排在 b 之前（临期优先策略的比较键，供诊断/测试复用）。
 func entryBetter(e, b *entry) bool {
 	if e.expiring != b.expiring {
 		return e.expiring > b.expiring
 	}
-	return e.credits > b.credits
+	if e.credits != b.credits {
+		return e.credits > b.credits
+	}
+	return e.a.UID < b.a.UID
+}
+
+// SetStrategy 切换挑号策略（面板保存后热生效）。
+func (p *Pool) SetStrategy(s Strategy) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.strategy == s {
+		return
+	}
+	p.strategy = s
+	p.saveLocked()
+}
+
+// GetStrategy 返回当前策略。
+func (p *Pool) GetStrategy() Strategy {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.strategy == "" {
+		return StrategyExpire
+	}
+	return p.strategy
 }
 
 // SetCreditDetail 更新账号积分：usable 为可消耗余额，expiring 为其中临期部分，
@@ -492,6 +602,7 @@ func (p *Pool) load() {
 	if json.Unmarshal(raw, &sf) != nil {
 		return
 	}
+	p.rrLast = sf.RRLast
 	// 旧格式（v2.2.0 及之前无 unusable；v2 无 expiring）：余额口径与新版不一致（可用/不可用/临期拆分），
 	// 读入后置 creditsStale，待自动刷新循环首刷时重算并清除。
 	// 新文件带 version>=stateVersion，且带 unusable 字段才视为可信。
@@ -518,7 +629,7 @@ func (p *Pool) saveLocked() {
 	if p.stateFp == "" {
 		return
 	}
-	sf := stateFile{Version: stateVersion, Accounts: map[string]accountState{}}
+	sf := stateFile{Version: stateVersion, RRLast: p.rrLast, Accounts: map[string]accountState{}}
 	now := time.Now()
 	for uid, e := range p.byUID {
 		var mc map[string]time.Time

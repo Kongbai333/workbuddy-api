@@ -249,6 +249,16 @@ func main() {
 	for _, a := range lmAuths {
 		lmPool.Add(a)
 	}
+	// 挑号策略（config.strategy）统一下发到所有渠道的池。
+	// 各渠道共用同一策略：策略是「怎么用账号」的全局偏好，不是渠道特性。
+	// normalize 已校验过合法性，这里 ParseStrategy 不会失败。
+	if st, ok := pool.ParseStrategy(cfg.Strategy); ok {
+		for _, p := range []*pool.Pool{wbPool, trPool, qdPool, wbaPool, qwPool, qcnPool,
+			qcmPool, glmPool, mcPool, rcPool, lmPool} {
+			p.SetStrategy(st)
+		}
+		log.Printf("账号挑选策略：%s", st.Label())
+	}
 	wbUp := upstream.New()
 	wbUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	trUp := traework.New()

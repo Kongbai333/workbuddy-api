@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -51,21 +52,35 @@ func NewClient() *http.Client { return &http.Client{Timeout: 30 * time.Second} }
 
 // Start 启动本地一次性回调监听，返回 Trae 授权 URL。
 //
-// 设备号作用域是「登录会话」，不是「本机」（issue #60/#70，R37 第二次修订）：
-// 每次 Start 都新生成一对 machineId/deviceId，随登录流程走完落进
-// auths/trae-<uid>.json —— 从此成为该账号的稳定注册设备（#3：x-device-id 必须是
-// 注册设备，否则 9074；签到/对话头均从 auth 文件读，重登/刷新不经过这里）。
-//   - 旧实现（本机级 device-id.json 全局复用）被 #70 实测证伪：一机挂 N 号 →
-//     共用设备号的账号全部撞 4017 风控（15 号对照：共享组 3 号全中、一机一号组 0 中）；
-//   - 同时它也是 #60 的根因：同一编造设备号被多账号先后绑定后，新账号授权
-//     直接 20401 Device limit reached。随机新会话号即可消解两者，无需读官方
-//     客户端真实设备号（需移植 storage.json TC 解密且依赖本机装官方客户端）。
+// ## 设备号来源：优先读本机客户端真实注册设备号
+//
+// claim 接口按「注册指纹」校验 device id（见 device.go 的实测依据），
+// 自己随机的 16 位数字不被认作注册设备 → 签到恒返 9074。因此这里**优先**
+// 从本机 Trae 客户端的 storage.json 读真实设备号，读不到才回退随机值。
+//
+// 回退随机值不是「凑合」而是必要的降级路径（未装客户端 / 格式变化）；
+// 但要清楚它的代价：新登录的账号签到会一直 9074。此时只能：
+//   - 装上官方客户端并登录一次（产生真实设备号），再回来重登本工具；或
+//   - 依赖 traework.CheckinClaim 的换号重试（部分情况下仍能领到）。
+//
+// 随机号仍按「登录会话」粒度生成（不落成本机级全局文件）：真实设备号是
+// 本机唯一值，同一机器上所有账号共用它是上游的正常形态（官方客户端即如此），
+// 但重复登录同一账号会重新绑定设备；反之每个会话都造新号会撞 #60 的
+// 20401 Device limit reached。故：**有真实设备号就用真实设备号，没有才造新的**。
 //
 // 注意：不能复用 login-state.json 本身——它承载的一次性登录状态（authCode/verifier）
 // 在登录成功/取消时会被删除。
 func Start(client *http.Client, statePath string) (string, error) {
-	machineID := randHex(32)                          // 真实客户端 64 位 hex（32 字节）
-	deviceID := randNumericID()                       // 真实客户端 15 位数字设备 ID（首次绑定随机产生）
+	machineID := randHex(32) // 真实客户端 64 位 hex（32 字节）
+	deviceID := clientDeviceID()
+	if deviceID != "" {
+		// 真实设备号来自客户端，machineId 也一并复用不了（不同字段），
+		// 仍生成本会话独立的 machineId：机器指纹与设备注册是两件事。
+		log.Printf("traework login: 使用客户端真实设备号 %s…", shortDevice(deviceID))
+	} else {
+		deviceID = randNumericID() // 回退：15 位数字，对齐客户端 device_id 格式
+		log.Printf("traework login: 未读到客户端设备号，回退随机 %s…（该账号签到可能 9074）", shortDevice(deviceID))
+	}
 	codeVerifier, codeChallenge := traework.GenPKCE() // PKCE：verifier 必须保存，交换 AuthCode 时用
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -379,4 +394,12 @@ func newUUID() string {
 	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
 	h := hex.EncodeToString(b)
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+}
+
+// shortDevice 设备号打日志用的短形式（前 6 位 + 省略号），避免把完整设备号写进日志。
+func shortDevice(id string) string {
+	if len(id) <= 6 {
+		return id
+	}
+	return id[:6] + "…"
 }

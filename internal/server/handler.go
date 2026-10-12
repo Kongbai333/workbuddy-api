@@ -158,8 +158,20 @@ func (h *Handler) stickyKey(kind provider.Kind) string { return kind.String() }
 //   - 连续成功请求达到 maxReqs 次（默认 50），自动轮换
 //
 // 任一条件触发则降级为 PickForModel(model) 选新账号并重置粘性记录。
+//
+// ## 负载均衡策略下必须旁粘性
+//
+// 粘性会把同一账号连用 50 次，而 roundrobin 的诉求恰恰是「每次都换一个」。
+// 两者叠加会让 roundrobin 看起来完全没生效（连续 50 个请求仍打同一个号）。
+// 故选中 roundrobin 时直接跳过粘性层，每次请求都真正轮转。
 func (h *Handler) pickWithSticky(rt *Runtime, model string) *auth.Auth {
 	const defaultMaxReqs = 50
+
+	// 负载均衡：跳过粘性（清掉旧记录，否则切回其它策略后会残留一个意外起点）。
+	if rt.Pool.GetStrategy() == pool.StrategyRoundRobin {
+		h.stickyClear(rt)
+		return rt.Pool.PickForModel(model)
+	}
 
 	h.stickyMu.RLock()
 	sticky := h.sticky[h.stickyKey(rt.Kind)]
