@@ -844,12 +844,30 @@ rotateLoop:
 				var sec provider.StreamErrorClassifier
 				if errors.As(serr, &sec) {
 					kind := sec.Kind()
+					// 单号渠道（池里只有 1 个账号，如 loomy/小浣熊/MonkeyCode）：
+					// 冷却它 = 整条渠道下线，反不如把上游原文透传给客户端 ——
+					// 客户端已通过 SSE 收到 3004/429 等真实错误，会自行退避重试。
+					// 与非流式路径的「单账号不罚账号」口径保持一致。
+					// SingleAccount（静态声明、无法人工恢复的渠道）走官方豁免，不在此覆盖。
+					singleAcct := len(rt.Pool.List()) <= 1 && !rt.SingleAccount
 					switch kind {
 					case provider.ErrSoftRate:
+						if singleAcct {
+							log.Printf("stream error passthrough platform=%s uid=%s kind=%s（单号渠道不罚账号，客户端自行重试）",
+								rt.Kind, acct.UID, kind)
+							break
+						}
 						rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "stream business error: "+serr.Error())
 						log.Printf("stream error cooled platform=%s uid=%s kind=%s cooldown=%s",
 							rt.Kind, acct.UID, kind, h.cfg.SoftCooldown)
 					case provider.ErrHardCredit:
+						if singleAcct {
+							// 余额不足同理：透传原文让用户看到「需要充值」，
+							// 而不是被整条渠道下线掩盖成「暂不可用」。
+							log.Printf("stream error passthrough platform=%s uid=%s kind=%s（单号渠道不罚账号）",
+								rt.Kind, acct.UID, kind)
+							break
+						}
 						rt.Pool.Cooldown(acct.UID, pool.CoolHard, h.cfg.HardCooldown, "stream business error: "+serr.Error())
 						log.Printf("stream error cooled platform=%s uid=%s kind=%s cooldown=%s",
 							rt.Kind, acct.UID, kind, h.cfg.HardCooldown)
@@ -1091,7 +1109,7 @@ func rewriteModel(body []byte, model string) ([]byte, error) {
 	return json.Marshal(obj)
 }
 
-// normalizeToolTurnContent 把「content 为 null 或缺失」的工具轮消息补成空串。
+// normalizeToolTurnContent 把「content 为 null 或缺失」的 assistant / tool 消息补成空串。
 //
 // 上游（实测 qoder/deepseek-flash，2026-09-24）要求带 tool_calls 的 assistant
 // 消息必须携带**字符串** content，null 或字段缺失会让它整请求拒答，并且报一个
@@ -1111,6 +1129,20 @@ func rewriteModel(body []byte, model string) ([]byte, error) {
 //
 // 放宽到 tool 角色一并处理：工具返回空内容时客户端同样可能给 null，上游对工具
 // 轮是同一套校验。
+//
+// ## 2026-10-12 放宽：普通 assistant（无 tool_calls）也要补
+//
+// 起因是 CodeBuddy「思考中途被打断」：客户端把半截思考存成
+// `{"role":"assistant","reasoning":"…"}` —— 无 content、无 tool_calls 的**空壳**。
+// 旧实现只在「带 tool_calls」时补（注释写「普通 assistant content=null 无证据
+// 会出问题」），空壳原样透传，上游对这种消息**整请求拒答**：
+// traecode/SOLO 流内 event:error `4001 the param is invalid`。
+// 症状极难定位：只有那一段会话坏了（新建会话即恢复），重启客户端也没用。
+//
+// 对方用同一份 129 条消息的真实会话做过重放对照（只改这一处）：
+// 原样重放 → 0.6s 即 4001；删掉空壳消息 → 正常出流；补 content:"" → 正常出流。
+// 即上游接受空串，故**补空串**（保留历史结构）而非丢消息 —— 丢消息会改变语义。
+// reasoning 字段一律保留不动。
 func normalizeToolTurnContent(obj map[string]any) {
 	msgs, _ := obj["messages"].([]any)
 	for _, raw := range msgs {
@@ -1120,12 +1152,9 @@ func normalizeToolTurnContent(obj map[string]any) {
 		}
 		role, _ := m["role"].(string)
 		switch role {
-		case "assistant":
-			// 只在真的带 tool_calls 时补：普通 assistant 消息 content=null 无证据会出问题。
-			if tc, ok := m["tool_calls"].([]any); !ok || len(tc) == 0 {
-				continue
-			}
-		case "tool":
+		case "assistant", "tool":
+			// 两者一律补 content:""，不再判 tool_calls —— 空壳 assistant
+			// （reasoning-only）同样是上游拒答的触发条件。
 		default:
 			continue
 		}

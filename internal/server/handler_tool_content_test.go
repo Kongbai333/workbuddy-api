@@ -35,10 +35,17 @@ func TestNormalizeToolTurnContentFixesNullAndMissing(t *testing.T) {
 			want: "str",
 		},
 		{
-			// 普通 assistant 消息不动：无证据表明上游对此有要求，不做无谓改写。
-			name: "assistant without tool_calls keeps null",
-			src:  `{"messages":[{"role":"assistant","content":null}]}`,
-			want: "nil",
+			// 2026-10-12 反转：无 tool_calls 的普通 assistant **也要**补空串。
+			//
+			// 起因是 CodeBuddy「思考中途被打断」留下的空壳消息
+			//（`{"role":"assistant","reasoning":"…"}`，无 content 无 tool_calls）：
+			// 上游对这种消息**整请求拒答**（traecode/SOLO 流内 `4001 the param is invalid`），
+			// 症状是「只有那一段会话坏了，新建会话才恢复」，重启客户端也没用。
+			// 旧实现只处理带 tool_calls 的 assistant，空壳原样透传 —— 本断言当时锁的
+			// 正是该 bug。对方用真实 129 条消息重放对照过：补 content:"" 后正常出流。
+			name: "empty-shell assistant (reasoning only) gets empty string",
+			src:  `{"messages":[{"role":"assistant","reasoning":"半截思考"}]}`,
+			want: "str",
 		},
 		{
 			name: "user message keeps null",

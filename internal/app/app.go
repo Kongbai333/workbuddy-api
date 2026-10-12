@@ -1577,6 +1577,16 @@ func (a *App) DisableAccount(uid string, disabled bool) error {
 // ResourceDetail 查询单个账号积分明细（含可用/不可用小计）。
 // 返回的 remain 与 items 同时给出：remain 供 pool 口径对账，items 供 UI 明细展示。
 // 遇 401 自动刷新 token 并重试一次，避免因本地 token 已失效导致明细永远为空。
+//
+// ## 为什么要回写 pool 快照
+//
+// 面板上「账号卡片的积分数」与「hover 明细弹层的数字」来自两条不同路径：
+// 前者读 pool 快照（只被刷新事件更新），后者是 hover 时的实时值。
+// 两者必然相差「刷新间隔内的消耗量」—— 用户看到的就是**同屏两个数字对不上**，
+// 而这其实是时差，不是上游口径问题。
+//
+// 故此处把**同一份响应**回写 pool：弹层展开那一刻，全屏数字同源于这次响应。
+// 与 creditTotals/refresh 路径同源（都走 UserResourceDetail 的单次响应）。
 func (a *App) ResourceDetail(uid string) (int64, []provider.ResourceItem, error) {
 	rt, au := a.findRuntimeAuth(uid)
 	if rt == nil || au == nil || rt.Upstream == nil {
@@ -1586,7 +1596,25 @@ func (a *App) ResourceDetail(uid string) (int64, []provider.ResourceItem, error)
 	if err != nil && a.refreshIfSessionDead(rt, au, err) {
 		remain, items, err = rt.Upstream.UserResourceDetail(au)
 	}
-	return remain, items, err
+	if err != nil {
+		return remain, items, err
+	}
+	// 同源回写：三口径与 creditTotals 完全一致（remain 即 pool 路由口径的可消耗余额，
+	// 临期为其中临期阈值内到期的部分，不可用由条目的 Usable 标记汇总）。
+	_, unusable := provider.Summarize(items)
+	expiring := provider.ExpiringWithin(items, a.expiringThreshold())
+	rt.Pool.SetCreditDetail(uid, remain, expiring, unusable)
+	return remain, items, nil
+}
+
+// expiringThreshold 当前生效的临期阈值。
+func (a *App) expiringThreshold() time.Duration {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.cfg.ExpiringThresholdDur <= 0 {
+		return 24 * time.Hour
+	}
+	return a.cfg.ExpiringThresholdDur
 }
 
 // ---------------------------------------------------------------------------

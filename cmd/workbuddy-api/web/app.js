@@ -640,6 +640,8 @@ function refreshTabBalances() {
 }
 
 function renderFees(fees) {
+  // 缓存最近一次结果：搜索重渲染要用（applyFeeSearch 依赖它，不必再请求接口）。
+  renderFees.lastData = fees;
   const box = $("feesBox");
   const channels = fees.channels || [];
 
@@ -775,10 +777,19 @@ function renderFees(fees) {
     // 它们本就不按 token 计费，所以费率接口不返回）。
     // 因此只渲染有倍率的行，隐藏数量在表下注明 —— 避免用户以为模型清单缺了东西：
     // 接口与客户端看到的始终是完整清单（/v1/models 不受影响）。
-    const models = all.filter((m) => m && m.priced);
-    const unpriced = all.length - models.length;
+    // 搜索态：额外保留「倍率 unknown」的条目 —— 用户搜的就是具体模型，
+    // 哪怕没倍率也该让他看到（并明确标注 unknown），否则搜了等于没搜。
+    const searching = !!feeQuery();
+    const models = searching ? all.filter((m) => m && feeMatch(ch.channel, m))
+                             : all.filter((m) => m && m.priced);
+    const unpriced = all.length - all.filter((m) => m && m.priced).length;
     const hidden = ch.channel !== active ? ' class="hidden"' : '';
     html += `<div class="fees-panel${hidden ? ' hidden' : ''}" data-feepanel="${esc(ch.channel)}">`;
+    if (models.length === 0) {
+      // 搜索无结果时给出明确说明，避免用户以为「这个渠道没有模型」。
+      html += `<div class="note">${searching ? "该渠道没有匹配「" + esc(feeQuery()) + "」的模型" : "暂无可显示模型"}</div></div>`;
+      continue;
+    }
     html += `<table><thead><tr><th>模型</th><th>倍率</th><th>模型</th><th>倍率</th></tr></thead><tbody>`;
     for (let i = 0; i < models.length; i += 2) {
       const m1 = models[i];
@@ -786,7 +797,7 @@ function renderFees(fees) {
       html += `<tr><td>${modelIdCell(m1, ch.channel)}</td><td>${rateCell(m1)}</td><td>${modelIdCell(m2, ch.channel)}</td><td>${rateCell(m2)}</td></tr>`;
     }
     html += `</tbody></table>`;
-    if (unpriced > 0) {
+    if (!searching && unpriced > 0) {
       html += `<div class="note" style="margin-top:6px">本渠道另有 ${unpriced} 个模型上游未提供倍率（多为内部/子代理模型），已从本表隐藏；接口与客户端不受影响，仍可正常调用。</div>`;
     }
     html += `</div>`;
@@ -794,6 +805,49 @@ function renderFees(fees) {
 
   html += `<div class="note" style="margin-top:8px">${esc(fees.disclaimer || "")}</div>`;
   box.innerHTML = html;
+}
+
+// ---- 费率表搜索 ----
+//
+// 135 个模型分散在十几个渠道 tab 里，靠翻找很痛苦。加一个即时过滤框：
+// 按模型名 / 渠道名 / 完整 ID（含倍率）匹配。
+//
+// 搜索态的两处特殊处理（与默认态不同，勿混）：
+//   1. **保留倍率 unknown 的条目** —— 用户搜的是具体模型，没倍率也该看到
+//      （并明确标 unknown）；默认态隐藏它们是为了让「比价」表干净。
+//   2. **自动切到有匹配的渠道 tab** —— 否则用户输入关键词却仍停在当前 tab，
+//      看到的还是不匹配的列表（最容易被当成「搜索坏了」）。
+
+// feeQuery 当前搜索词（小写；空串 = 未搜索）。
+function feeQuery() {
+  const el = $("feeSearch");
+  return el ? el.value.trim().toLowerCase() : "";
+}
+
+// feeMatch 某渠道下某模型是否命中搜索词。
+function feeMatch(channel, m) {
+  const q = feeQuery();
+  if (!q) return false;
+  if ((m.model || "").toLowerCase().includes(q)) return true;
+  if ((channel || "").toLowerCase().includes(q)) return true;
+  // 完整 ID（含倍率后缀）也算可搜：用户可能直接粘 `workbuddy/glm-5.3-flash (0.06x)`。
+  const full = `${channel}/${m.model}` + (m.priced ? ` (${m.rate.toFixed(2)}x)` : "");
+  return full.toLowerCase().includes(q);
+}
+
+// applyFeeSearch 搜索变化时重渲染。
+// 只在「当前 tab 无匹配、但别的 tab 有」时切 tab —— 不无条件抢走用户的选择。
+function applyFeeSearch() {
+  const data = renderFees.lastData;
+  if (!data) return;
+  if (feeQuery()) {
+    const chans = data.channels || [];
+    const has = (ch) => (ch.models || []).some((m) => m && feeMatch(ch.channel, m));
+    if (!has(renderFees.lastCh) && chans.some(has)) {
+      renderFees.lastCh = chans.find(has).channel;
+    }
+  }
+  renderFees(data);
 }
 
 // bindFeesTabs 费率渠道标签点击切换（事件委托，绑定一次）。
@@ -1716,6 +1770,7 @@ function bind() {
   $("btnCancelLogin").onclick = cancelLogin;
   $("btnRefreshFees").onclick = refreshFees;
   $("btnExportModels").onclick = exportModelsJson;
+  $("feeSearch").addEventListener("input", applyFeeSearch);
   $("btnMjConfirm").onclick = confirmModelsJson;
   $("btnMjCancel").onclick = closeModelsJson;
   $("modelsJsonOverlay").onclick = (e) => { if (e.target === $("modelsJsonOverlay")) closeModelsJson(); };
