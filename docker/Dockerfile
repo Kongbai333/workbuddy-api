@@ -36,12 +36,14 @@ VOLUME ["/data"]
 EXPOSE 7863 17863
 
 # 配置全部通过 WILDWORK_* 环境变量传入，由 entrypoint 在容器内生成 config.json。
+# WILDWORK_LOGIN_CALLBACK **故意不设默认值**：设了就等于「每次启动都覆盖」，
+# 用户在面板里改的地址会在下次 up -d 后丢失。默认值（http://127.0.0.1:17863）
+# 由 entrypoint 兜底，取值优先级见 entrypoint.sh。
 ENV WILDWORK_HOME="/app" \
     WILDWORK_LISTEN=":7863" \
     WILDWORK_AUTH_DIR="/data/auths" \
     WILDWORK_STATE_FILE="/data/state.json" \
     WILDWORK_REGION="cn" \
-    WILDWORK_LOGIN_CALLBACK="http://127.0.0.1:17863" \
     TZ="Asia/Shanghai"
 
 # /healthz 无需鉴权，探针不带 API Key。

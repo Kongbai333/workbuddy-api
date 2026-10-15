@@ -307,6 +307,15 @@
           <label class="lbl wide" title="面板登录口令（与给 AI 客户端用的 API-Key 是两套）">管理密码<span id="adminPassReq" class="req hidden" title="监听非本机地址时必填">*</span></label>
           <input id="adminPassInput" class="input grow" type="password" spellcheck="false" placeholder="留空 = 面板不鉴权（仅本机监听时允许）" autocomplete="new-password">
         </div>
+        <div class="row">
+          <label class="lbl wide" title="TraeWork / 千问办公 登录时，浏览器要跳回来的地址">登录回调地址</label>
+          <input id="inLoginCallback" class="input grow" spellcheck="false" placeholder="留空 = 127.0.0.1 随机端口（仅本机浏览器可用）">
+        </div>
+        <div class="row" style="align-items:center">
+          <label class="lbl wide"></label>
+          <button class="btn small" id="btnLoginCallbackFill" title="填入本机当前局域网地址">用本机 IP 填充</button>
+          <span class="hint" style="margin-left:8px">TraeWork / 千问办公 登录用，保存即生效、无需重启；容器部署还要把该端口映射到宿主机</span>
+        </div>
         <div class="row" style="align-items:center">
           <label class="lbl wide"></label>
           <button class="btn small" id="btnAdminLogout">退出登录</button>

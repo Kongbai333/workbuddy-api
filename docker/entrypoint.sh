@@ -36,7 +36,17 @@ GROWTH_TRAVEL_LOC="${WILDWORK_GROWTH_TRAVEL_LOCATION:-1}"
 # 必须走一个「宿主机映射过、浏览器够得着」的固定端口，否则授权完成后面板
 # 会一直停在「等待完成」。镜像默认 http://127.0.0.1:17863（浏览器与 Docker
 # 宿主机同机）；浏览器在别的机器时改成宿主机的局域网地址。
+#
+# 取值优先级：显式环境变量 > 面板里改过的值（容器内 config.json）> 内置默认。
+# 为什么保留面板值：宿主机 IP 会变（换网络、DHCP 续租），用户是在**面板的输入框**
+# 里改这个地址的；若每次启动都无条件覆盖，用户的修改会在下次 up -d 后悄悄丢失。
 LOGIN_CALLBACK="${WILDWORK_LOGIN_CALLBACK:-}"
+if [ -z "$LOGIN_CALLBACK" ] && [ -f "$HOME_DIR/config.json" ]; then
+    LOGIN_CALLBACK=$(sed -n 's/.*"login_callback"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$HOME_DIR/config.json" | head -n 1)
+fi
+if [ -z "$LOGIN_CALLBACK" ]; then
+    LOGIN_CALLBACK="http://127.0.0.1:17863"
+fi
 
 # to_int <值> <兜底>：只保留数字；清洗后为空则用兜底。
 # 防止把 "abc" 之类的值直接写进 JSON 造成解析失败。
@@ -102,11 +112,8 @@ echo "[entrypoint] 已生成 $HOME_DIR/config.json"
 echo "[entrypoint]   listen=${LISTEN}  region=${REGION}  timeout=${TIMEOUT}s"
 echo "[entrypoint]   auth_dir=${AUTH_DIR}"
 echo "[entrypoint]   state_file=${STATE_FILE}"
-if [ -n "$LOGIN_CALLBACK" ]; then
-    echo "[entrypoint]   login_callback=${LOGIN_CALLBACK}（TraeWork/千问办公 登录用；须把该端口映射到宿主机）"
-else
-    echo "[entrypoint]   login_callback 未设置：TraeWork/千问办公 的登录回调会落在容器内 127.0.0.1 的随机端口，容器外的浏览器够不着"
-fi
+echo "[entrypoint]   login_callback=${LOGIN_CALLBACK}（TraeWork/千问办公 登录用；须把该端口映射到宿主机）"
+echo "[entrypoint]   该地址也可在面板「设置 → 接口与鉴权 → 登录回调地址」里随时改，改完下次登录即生效"
 if [ -z "$API_KEY" ]; then
     echo "[entrypoint]   ⚠️  API_KEY 为空：OpenAI 兼容接口无鉴权！仅限本机/内网，切勿暴露公网"
 else

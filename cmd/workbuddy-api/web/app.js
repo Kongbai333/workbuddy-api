@@ -1568,6 +1568,11 @@ function openSettings() {
   }
   // API-Key
   $("keyInput").value = state.api_key;
+  // 登录回调地址：用户电脑 IP 会变，留一个可改的输入框（占位 = 后端按当前网卡算的建议值）
+  $("inLoginCallback").value = state.login_callback || "";
+  $("inLoginCallback").placeholder = state.login_callback_suggested
+    ? `如 ${state.login_callback_suggested}（留空 = 127.0.0.1 随机端口，仅本机浏览器可用）`
+    : "留空 = 127.0.0.1 随机端口（仅本机浏览器可用）";
   // 管理密码：后端不回显，只提示是否已设置（留空 = 不改动）
   $("adminPassInput").value = "";
   $("adminPassInput").placeholder = state.admin_pass_set
@@ -1656,6 +1661,14 @@ async function saveSettings() {
       const r = await api("/api/auth/login", { password: adminPass });
       authSession = r.session || "";
     } catch (e) { toast(e.message); closeSettings(); showLogin("管理密码已变更，请重新登录"); return; }
+  }
+
+  // 1.5) 登录回调地址（TraeWork / 千问办公 登录用）：只在改动时提交，保存后下次登录即生效
+  const loginCallback = $("inLoginCallback").value.trim();
+  if (loginCallback !== (state.login_callback || "")) {
+    try {
+      await api("/api/config/login_callback", { login_callback: loginCallback });
+    } catch (e) { toast(e.message); return; }
   }
 
   // 2) 代理（先本地校验，失败阻断保存）
@@ -1940,6 +1953,12 @@ function bind() {
   // 自定义主机名边输边判（可能一开始就填着非本机地址）
   $("inHost").addEventListener("input", syncListenRisk);
   $("keyInput").addEventListener("keydown", (e) => { if (e.key === "Enter") saveSettings(); });
+  // 「用本机 IP 填充」：把后端按当前网卡算出的建议地址写进输入框（还需点保存才落盘）
+  $("btnLoginCallbackFill").onclick = () => {
+    const sug = state.login_callback_suggested;
+    if (!sug) { toast("取不到本机局域网地址，请手工填写"); return; }
+    $("inLoginCallback").value = sug;
+  };
 
   // 显示名修改弹层
   $("btnRenameSave").onclick = saveRename;

@@ -153,8 +153,12 @@ func Start(_ *http.Client, statePath, callbackBase string) (string, error) {
 		_, _ = io.WriteString(w, callbackPage(true, ""))
 	})
 	callbackLn = ln
-	callbackSrv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-	go func() { _ = callbackSrv.Serve(ln) }()
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	callbackSrv = srv
+	// 闭包里用局部变量而不是全局 callbackSrv：Shutdown() 会把全局置 nil，
+	// 若本次 Start 的 goroutine 还没被调度就先跑完了一次 Shutdown（测试里很常见），
+	// 读全局会读到 nil 并 panic 在 Serve 里。
+	go func() { _ = srv.Serve(ln) }()
 	srvOnce = sync.Once{} // 允许下次登录重新 Start
 
 	return authURL, nil

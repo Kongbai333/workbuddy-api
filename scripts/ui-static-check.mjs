@@ -45,6 +45,9 @@ const FAKE_STATE = {
   ],
   checkin_times: [],
   next_checkin: "-",
+  // 登录回调地址：宿主机 IP 会变，故是面板里可改的输入框（不是只读配置）
+  login_callback: "",
+  login_callback_suggested: "http://192.168.1.10:17863",
 };
 
 // ---- 最小 DOM stub ----
@@ -226,6 +229,11 @@ check('第三个 tab 按钮存在（data-mtab="stats"）', /data-mtab="stats"/.t
 check("#mtabStats body 存在且默认隐藏", /class="mtab-body hidden" id="mtabStats"/.test(html));
 check("运行统计区块骨架存在（stSum/stPlat/stApplog）", /id="stSum"/.test(html) && /id="stPlat"/.test(html) && /id="stApplog"/.test(html));
 check("更新角标存在（id=stUpdated，拉取失败可感知）", /id="stUpdated"/.test(html));
+// 登录回调地址：宿主机 IP 会变，必须能在面板里改（TraeWork / 千问办公 登录用）
+check("设置面板含登录回调输入框（id=inLoginCallback）", /id="inLoginCallback"/.test(html));
+check("登录回调有「用本机 IP 填充」按钮", /id="btnLoginCallbackFill"/.test(html));
+check("app.js 回填登录回调地址", /inLoginCallback"\)\.value = state\.login_callback/.test(raw));
+check("app.js 保存登录回调走 POST /api/config/login_callback", /\/api\/config\/login_callback/.test(raw));
 const css = readFileSync(new URL("../cmd/workbuddy-api/web/style.css", import.meta.url), "utf8");
 check("style.css 含运行统计样式段（#mtabStats .st-sum 等）", /#mtabStats \.st-sum/.test(css) && /#mtabStats \.st-plat-row/.test(css));
 check("更新角标失败警示样式存在（#stUpdated.st-stale）", /#stUpdated\.st-stale/.test(css));

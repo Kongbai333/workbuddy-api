@@ -8,6 +8,7 @@
   "auth_dir": "./auths",
   "state_file": "./data/state.json",
   "region": "cn",
+  "login_callback": "",
   "session_sticky": true,
   "strategy": "expire",
   "max_rotate": 3,

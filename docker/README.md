@@ -118,7 +118,7 @@ sh docker/build-image.sh          # 构建 + 导出 tar + SHA256SUMS 到 docker/
 | `WILDWORK_STATE_FILE` | `/data/state.json` | 冷却/签到状态 |
 | `WILDWORK_REGION` | `cn` | 区域，只接受 `cn` |
 | `TZ` | `Asia/Shanghai` | 影响定时签到触发时刻（已内嵌 tzdata，一定生效） |
-| `WILDWORK_LOGIN_CALLBACK` | `http://127.0.0.1:17863`（镜像内置） | 登录回调基址。**TraeWork / 千问办公 必须设**，且端口要映射出去；浏览器在别的机器时改成宿主机局域网 IP。详见「五、添加账号」 |
+| `WILDWORK_LOGIN_CALLBACK` | 留空 = `http://127.0.0.1:17863` | 登录回调基址（TraeWork / 千问办公 用），且端口要映射出去。**通常不用在这里设**：留空即可，进面板「设置 → 接口与鉴权 → 登录回调地址」随时改（IP 变了就改）。在这里赋值 = 每次启动都覆盖面板里的值。详见「五、添加账号」 |
 
 ### 可选
 
@@ -146,7 +146,7 @@ sh docker/build-image.sh          # 构建 + 导出 tar + SHA256SUMS 到 docker/
 | 类型 | 渠道 | 容器里能用吗 |
 |---|---|---|
 | 面板内完成 OAuth 轮询（纯服务端轮询，无本机回调） | WorkBuddy、WorkBuddy AI、Qoder（三个变体） | ✅ 直接可用 |
-| 授权后回调到**本机地址** | TraeWork、千问办公 QwenWork | ⚠️ 需配置 `WILDWORK_LOGIN_CALLBACK` + 映射端口，见下节 |
+| 授权后回调到**本机地址** | TraeWork、千问办公 QwenWork | ⚠️ 需在面板里填「登录回调地址」+ 映射端口，见下节 |
 | 授权后回调到**本机协议处理器** | 小浣熊 | ❌ 容器里没有 Windows 协议处理器，请用「从本机客户端导入」或裸机运行 |
 | 需从本机官方客户端导入凭据 | MonkeyCode、Loomy | ⚠️ 依赖本机已登录的客户端，容器里取不到，需手工放置 auth 文件 |
 | 需从浏览器 Cookie 粘贴令牌 | 智谱清言 GLM | ✅ 直接可用 |
@@ -164,17 +164,26 @@ sh docker/build-image.sh          # 构建 + 导出 tar + SHA256SUMS 到 docker/
 
 解法：告诉程序「浏览器够得着的回调地址是什么」，并把那个端口映射出去。
 
-| 你的情况 | `WILDWORK_LOGIN_CALLBACK` | `ports` |
+| 你的情况 | 登录回调地址 | `ports` |
 |---|---|---|
 | 浏览器就在 Docker 宿主机上 | `http://127.0.0.1:17863` | `"127.0.0.1:17863:17863"` |
 | 浏览器在另一台电脑（NAS 常见） | `http://<宿主机局域网IP>:17863` | `"17863:17863"` |
 
-镜像里已默认 `WILDWORK_LOGIN_CALLBACK=http://127.0.0.1:17863`，仓库自带的几个
-compose 文件也都映射了 17863 —— 所以**浏览器与 Docker 宿主机同机时开箱即用**；
-只有浏览器在别的机器时才需要改成宿主机的局域网地址。
+**在面板里改就行，不用改 compose 也不用重启：** 打开「设置 → 接口与鉴权 →
+登录回调地址」，填上表里对应那一行的地址，点保存即生效（下一次发起登录就用新值）。
+点旁边的「用本机 IP 填充」会把程序当前探测到的局域网地址一键填进输入框 ——
+宿主机 IP 变了（换网络、DHCP 续租）时，点一下、保存，即可，不必重建容器。
 
-改完重启容器，`docker logs` 里会打印实际生效的 `login_callback=`，登录发起时
-还会打印一行 `traework login: 回调基址 …`，可直接对账。
+留空 = 沿用 `http://127.0.0.1:17863`（浏览器与 Docker 宿主机同机时开箱即用），
+仓库自带的几个 compose 文件也都映射了 17863。
+**重启**容器（`docker restart`）后面板里填的值会被保留：`entrypoint.sh` 的优先级是
+「显式 `WILDWORK_LOGIN_CALLBACK` 环境变量 > 面板里改过的值 > 内置默认」。
+⚠️ 但 `docker compose up -d` 会**重建容器**，容器内的 `config.json` 一并重置，
+这时会回到默认值 —— 如果你经常升级镜像、希望重建后也不变，就在 `.env`/compose 里
+显式设 `WILDWORK_LOGIN_CALLBACK`（设了就以它为准），或者重建后再在面板里改一次。
+
+对账方式：`docker logs` 里会打印启动时生效的 `login_callback=`，登录发起时还会
+打印一行 `traework login: 回调基址 …`；面板里也能看到当前值。
 
 > 端口只接受 http、必须显式写端口。用 `https://` 会在启动时直接报错 ——
 > 回调监听是明文 HTTP，写成 https 只会得到「地址看着对、浏览器连不上」的静默失败。

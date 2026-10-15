@@ -1763,6 +1763,35 @@ func (a *App) SetAPIKey(key string) error {
 	return nil
 }
 
+// SetLoginCallback 修改登录回调的对外基址（TraeWork / 千问办公 用）。
+//
+// 这是面板里可改的运行时项，而不是只能写进配置文件/环境变量的启动参数：
+// 宿主机 IP 会变（换网络、DHCP 续租），写死一份地址迟早失效，用户得能自己改。
+// 空串 = 回到默认行为（127.0.0.1 + 随机端口，浏览器与程序同机时天然可达）。
+//
+// 不重启即生效：每次开始登录时 StartLoginFor 都重新读 a.cfg.LoginCallback。
+func (a *App) SetLoginCallback(raw string) error {
+	// 先校验并规范化（补 scheme、补默认端口、去尾斜杠），非法值直接拒绝，
+	// 避免把「地址看着对、浏览器却连不上」的写法存进配置。
+	_, base, err := config.ParseLoginCallback(raw)
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.cfg.LoginCallback = base
+	err = config.Save(a.cfg, a.cfgPath)
+	a.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if base == "" {
+		log.Printf("登录回调地址已清空：回到 127.0.0.1 随机端口（仅同机浏览器可达）")
+	} else {
+		log.Printf("登录回调地址已更新：%s（下次登录生效，无需重启）", base)
+	}
+	return nil
+}
+
 // SetAutostart 设置/取消开机自启。
 func (a *App) SetAutostart(on bool) error {
 	if err := platform.SetAutostart(on); err != nil {
@@ -1997,6 +2026,14 @@ type State struct {
 	ListenPort int    `json:"listen_port"`
 	APIKey     string `json:"api_key"`
 
+	// LoginCallback 本机 OAuth 回调的**对外基址**（TraeWork / 千问办公 登录时
+	// 浏览器要跳回来的地址）。空串 = 沿用 127.0.0.1 + 随机端口（仅浏览器与程序
+	// 同机时可用）。保存走 POST /api/config/login_callback。
+	// LoginCallbackSuggested 输入框的占位建议值（当前局域网 IP + 默认端口），
+	// 宿主机 IP 常变，故由后端按当前网络现场算，不写死在配置里。
+	LoginCallback          string `json:"login_callback"`
+	LoginCallbackSuggested string `json:"login_callback_suggested"`
+
 	// AdminPassSet 是否已配置管理密码（不回显密码本身）；
 	// AuthEnabled = 面板鉴权已生效（密码非空）；
 	// AuthSession = 当前浏览器 cookie 对应的口令指纹（已登录时非空且等于服务端口令指纹）。
@@ -2067,6 +2104,8 @@ func (a *App) GetState() State {
 		LanIP:          lanIP(),
 		ExpiringDays:   int(a.cfg.ExpiringThresholdDur / (24 * time.Hour)),
 	}
+	st.LoginCallback = a.cfg.LoginCallback
+	st.LoginCallbackSuggested = suggestedLoginCallback()
 	cur, _ := pool.ParseStrategy(a.cfg.Strategy)
 	st.Strategy = string(cur)
 	st.StrategyLabel = cur.Label()
@@ -2471,6 +2510,23 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		if err := a.SetAutostart(req.On); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+	mux.HandleFunc("POST /api/config/login_callback", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			LoginCallback string `json:"login_callback"`
+		}
+		// 这里比同组接口严格一点：解析失败不当作「清空」。清空的语义是「回到
+		// 127.0.0.1 随机端口」，而 TraeWork / 千问办公 登录在容器里就再也连不回来，
+		// 一个手抖写坏的请求不该静默造成这个结果。
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			apiError(w, http.StatusBadRequest, "请求体不是合法 JSON："+err.Error())
+			return
+		}
+		if err := a.SetLoginCallback(req.LoginCallback); err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -3024,6 +3080,16 @@ func lanIP() string {
 		return ""
 	}
 	return addr.IP.String()
+}
+
+// suggestedLoginCallback 面板输入框的建议值：当前局域网 IP + 默认回调端口。
+// 取不到局域网 IP 时退回 127.0.0.1（至少同机可用），只作占位提示，不写配置。
+func suggestedLoginCallback() string {
+	ip := lanIP()
+	if ip == "" {
+		ip = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(ip, strconv.Itoa(config.LoginCallbackDefaultPort))
 }
 
 func fmtTime(t time.Time) string {
