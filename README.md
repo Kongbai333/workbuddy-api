@@ -186,10 +186,15 @@ docker run -d --name workbuddy-api --restart unless-stopped \
   ghcr.io/kongbai333/workbuddy-api:latest
 ```
 
-> GHCR 的包**默认私有**，直接 `docker pull` 会 401。要么在
-> GitHub → Packages → `workbuddy-api` → Package settings 里把可见性改成 Public，
-> 要么先 `docker login ghcr.io` 再拉。可选标签：`latest`、`0.1.2`（对应 `v0.1.2`）、
-> `sha-xxxxxxx`（回滚到具体提交）。
+嫌 `docker run` 参数长的话，直接用仓库里的 [`docker-compose.image.yml`](docker-compose.image.yml)：
+
+```bash
+docker compose -f docker-compose.image.yml up -d   # 先改掉里面 3 处 ★必改
+```
+
+> 本仓库的 GHCR 包已设为 **Public**，可以直接 `docker pull`。
+> 若哪天改回私有，拉取前需要先 `docker login ghcr.io`。
+> 可选标签：`latest`、`0.1.2`（对应 `v0.1.2`）、`sha-xxxxxxx`（回滚到具体提交）。
 
 #### 方式二 · 从源码本地构建（干净 clone 即可）
 

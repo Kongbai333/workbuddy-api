@@ -39,11 +39,16 @@ docker pull ghcr.io/kongbai333/workbuddy-api:latest
 
 然后用 `fnos-compose.yml`（把 `image` 换成上面这个地址）建容器即可。
 
-> ⚠️ GHCR 的包**默认私有**，未登录 `docker pull` 会 401。两种解法：
-> 1. GitHub → 头像 → Packages → `workbuddy-api` → Package settings →
->    Change visibility → **Public**；
-> 2. 保持私有：`echo $CR_PAT | docker login ghcr.io -u <用户名> --password-stdin`
->    （PAT 需要 `read:packages` 权限）后再 pull。
+更省事的做法：直接用仓库根目录的 [`../docker-compose.image.yml`](../docker-compose.image.yml)，
+里面已经配好端口、卷、健康检查与全部 `WILDWORK_*` 变量，改 3 处 ★必改 即可：
+
+```sh
+docker compose -f docker-compose.image.yml up -d
+```
+
+> 本仓库的 GHCR 包已设为 **Public**，可以直接 `docker pull`。若改回私有，
+> 拉取前需要先 `echo $CR_PAT | docker login ghcr.io -u <用户名> --password-stdin`
+> （PAT 需要 `read:packages` 权限）。
 >
 > 可用标签：`latest`、`0.1.2`（对应 `v0.1.2`）、`sha-xxxxxxx`（回滚到具体提交）。
 
