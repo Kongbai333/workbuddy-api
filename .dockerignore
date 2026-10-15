@@ -1,0 +1,42 @@
+# Docker 构建上下文过滤（供**仓库根目录**的 Dockerfile / docker-compose.yml 使用）。
+#
+# 两个目的：
+#   1. 别把运行期数据与密钥送进构建上下文 —— .env / config.json / auths/ / data/
+#      含明文凭据。本 Dockerfile 只 COPY go.mod/go.sum 与源码，但整个上下文会被
+#      打包发给 docker daemon，密钥不该出现在任何构建输入里。
+#   2. 缩小上下文 → 构建更快，且「源码层」缓存不会被无关文件（.git、离线镜像 tar）
+#      反复打穿。
+#
+# 注意：docker/Dockerfile 用的是 docker/ 子目录作上下文，不受本文件影响；
+# 那个目录下若也需要过滤，另建 docker/.dockerignore。
+
+# 版本控制与 CI 配置
+.git
+.github
+
+# 构建产物 / 离线镜像（体积大，与源码构建无关）
+dist/
+docker/dist/
+docker/workbuddy-api
+
+# 运行期数据与敏感配置
+data/
+auths/
+config.json
+*.log
+.env
+.env.local
+docker/.env
+
+# 第三方参考克隆与临时目录
+ref/
+temp/
+
+# 文档与 IDE
+docs/
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

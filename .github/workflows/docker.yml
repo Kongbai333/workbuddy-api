@@ -1,0 +1,158 @@
+name: Docker Image
+
+# 目标：push 到默认分支或打 v* tag 时，自动构建容器镜像并推到 GitHub Container Registry。
+#
+# 产出（用仓库自带的 GITHUB_TOKEN 推，不需要在 Secrets 里配任何东西）：
+#     ghcr.io/kongbai333/workbuddy-api:latest       ← 默认分支每次推送
+#     ghcr.io/kongbai333/workbuddy-api:0.1.2        ← 打 v0.1.2 tag（另有 0.1 与 sha-xxxxxxx）
+#     ghcr.io/kongbai333/workbuddy-api:sha-4025ad4  ← 每次提交，便于回滚到具体 commit
+#     （架构：linux/amd64 + linux/arm64，NAS / 树莓派 / Apple Silicon 都能直接 pull）
+#
+# ⚠️ GHCR 的包**默认是私有的**，未登录直接 `docker pull` 会 401 Unauthorized。
+#    两种解法，二选一：
+#      1) 公开：GitHub → 右上头像 → Packages → workbuddy-api → Package settings
+#               → Change visibility → Public（之后谁都能 pull）
+#      2) 保持私有：先 `echo $CR_PAT | docker login ghcr.io -u <用户名> --password-stdin`
+#               （CR_PAT 是带 read:packages 权限的 PAT），再 pull
+#
+# 为什么不用 docker/Dockerfile：那份要求先交叉编译出 docker/workbuddy-api，
+# CI 里没有这个文件。这里用仓库根的 Dockerfile —— 它自己编译源码，干净 clone 即可构建。
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  # PR 只构建、不推送：提前发现 Dockerfile 被改坏
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+# 同一分支连推多次时，取消掉还在跑的上一次，避免排队白等
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  # github.repository 形如 kongbai333/workbuddy-api；镜像名必须全小写，
+  # docker/metadata-action 会自动把 image 转小写，无需手动 toLower。
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ────────────────────────────────────────────────────────────────
+  # 1) 构建多架构镜像并推送到 GHCR
+  # ────────────────────────────────────────────────────────────────
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # QEMU 只用于「运行」非本机架构的基础镜像层；本项目的 Go 源码是交叉编译的
+      # （见 Dockerfile 里的 --platform=$BUILDPLATFORM），不靠模拟器编译，快很多。
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成镜像标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,format=short
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          # PR 只出 amd64（省时间）；真正推镜像时两个架构都出。
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # 关掉 provenance/SBOM attestation：它会额外生成一层 manifest，
+          # NAS 上常见的旧版 docker（如 fnOS 自带的）拉取时容易报
+          # "no matching manifest for linux/amd64"。普通镜像够用。
+          provenance: false
+          sbom: false
+
+  # ────────────────────────────────────────────────────────────────
+  # 2) 冒烟测试：真的把镜像跑起来，探 /healthz 并验证鉴权
+  #
+  # 单独一个 job 而不是并进上面：上面那个是 buildx 多架构 + 只推不落本地，
+  # 没法 docker run。这里用普通 docker build 出一个本机镜像真跑一遍 ——
+  # Dockerfile 编不过、entrypoint 挂掉、端口没监听，这些在构建日志里都看不出来。
+  # ────────────────────────────────────────────────────────────────
+  smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 显式装 buildx：Dockerfile 里用了 $BUILDPLATFORM / TARGETARCH 等
+      # 自动平台参数，需要 BuildKit 前端。
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 构建本机架构镜像
+        run: docker buildx build --load -t workbuddy-api:smoke .
+
+      - name: 启动容器并等待 /healthz
+        run: |
+          docker run -d --name wb-smoke \
+            -e WILDWORK_ADMIN_PASSWORD=smoke-admin-pass \
+            -e WILDWORK_API_KEY=smoke-api-key \
+            -e TZ=Asia/Shanghai \
+            -p 17863:7863 \
+            workbuddy-api:smoke
+
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:17863/healthz >/dev/null 2>&1; then
+              echo "✓ /healthz 探活成功（第 ${i} 次探测）"
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+
+          echo "===== 容器日志 ====="
+          docker logs wb-smoke || true
+          echo "===================="
+
+          if [ "$ok" != "1" ]; then
+            echo "::error::容器未在 60 秒内通过 /healthz 探活"
+            exit 1
+          fi
+
+      - name: 校验鉴权（带 Key 放行 / 不带 Key 拒绝）
+        run: |
+          code_ok=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer smoke-api-key" http://127.0.0.1:17863/v1/models)
+          code_no=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:17863/v1/models)
+          echo "带 Key   → HTTP $code_ok （期望 200）"
+          echo "不带 Key → HTTP $code_no （期望 401）"
+          [ "$code_ok" = "200" ] || { echo "::error::带 Key 的 /v1/models 期望 200，实际 $code_ok"; exit 1; }
+          [ "$code_no" = "401" ] || { echo "::error::不带 Key 的 /v1/models 期望 401，实际 $code_no"; exit 1; }
+
+      - name: 清理
+        if: always()
+        run: docker rm -f wb-smoke || true

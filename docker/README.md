@@ -19,9 +19,51 @@
 
 ---
 
-## 二、两种部署路径
+## 二、四条部署路径
 
-### 路径 A · 离线镜像（推荐，无需网络与构建）
+| 路径 | 镜像从哪来 | 需要网络吗 | 适用场景 |
+|---|---|---|---|
+| **A · 拉现成镜像**（推荐） | GitHub Actions 自动构建后推到 GHCR | 拉取时需要 | 绝大多数人；NAS 上最省事 |
+| **B · 本地源码构建** | 仓库根 `Dockerfile`，镜像内自己编译 | 构建时需要 | 开发机 / 想改代码后自己构建 |
+| **C · 离线镜像 tar** | 有 Docker 的机器打 tar，目标机 `docker load` | **全程不需要** | 目标机完全无外网 |
+| **D · NAS 现场构建** | `docker/Dockerfile` + 预编译二进制 | 构建时需要 | 老流程；弱网但能拉基础镜像 |
+
+### 路径 A · 直接拉 GHCR 镜像（推荐）
+
+每次推送到默认分支或打 `v*` tag，`.github/workflows/docker.yml` 会自动构建
+`linux/amd64` + `linux/arm64` 镜像并推送：
+
+```sh
+docker pull ghcr.io/kongbai333/workbuddy-api:latest
+```
+
+然后用 `fnos-compose.yml`（把 `image` 换成上面这个地址）建容器即可。
+
+> ⚠️ GHCR 的包**默认私有**，未登录 `docker pull` 会 401。两种解法：
+> 1. GitHub → 头像 → Packages → `workbuddy-api` → Package settings →
+>    Change visibility → **Public**；
+> 2. 保持私有：`echo $CR_PAT | docker login ghcr.io -u <用户名> --password-stdin`
+>    （PAT 需要 `read:packages` 权限）后再 pull。
+>
+> 可用标签：`latest`、`0.1.2`（对应 `v0.1.2`）、`sha-xxxxxxx`（回滚到具体提交）。
+
+### 路径 B · 本地从源码构建
+
+在**仓库根目录**（不是 `docker/`）执行 —— 不需要事先编译任何二进制：
+
+```sh
+cp docker/.env.example .env     # 改掉两个 ★必改
+docker compose up -d
+```
+
+这条路径用的是仓库根 `Dockerfile`：多阶段构建，构建阶段编译出静态二进制，
+运行阶段只保留 alpine + 二进制。多架构靠 `GOARCH` 交叉编译，不用 QEMU 模拟。
+
+### 路径 C · 离线镜像 tar（目标机无网络）
+
+```sh
+sh docker/build-image.sh          # 构建 + 导出 tar + SHA256SUMS 到 docker/dist/
+```
 
 1. 把 `workbuddy-api-v<版本>-linux-amd64.tar` 与 `load-image.sh` 传到 NAS 同一目录
 2. 在该目录执行一次：`sh load-image.sh`
@@ -29,17 +71,11 @@
 
 离线 tar 自带全部镜像层，**全程不需要网络**。
 
-### 路径 B · NAS 现场构建
+### 路径 D · NAS 现场构建
 
 1. 开发机执行 `sh docker/build-binary.sh` 交叉编译出 `docker/workbuddy-api`
 2. 把整个 `docker/` 目录传到 NAS
 3. 在 NAS 上 `sh build-on-nas.sh` → `docker build` 出镜像
-
-### 路径 C · 有 Docker 的开发机打 tar
-
-```sh
-sh docker/build-image.sh          # 构建 + 导出 tar + SHA256SUMS 到 docker/dist/
-```
 
 ---
 
@@ -47,9 +83,10 @@ sh docker/build-image.sh          # 构建 + 导出 tar + SHA256SUMS 到 docker/
 
 | 文件 | 作用 |
 |---|---|
-| `Dockerfile` | alpine 基础镜像；零 apk 依赖，只拷二进制与 entrypoint |
+| `../Dockerfile`（仓库根） | **源码构建**：多阶段，构建阶段编译 Go 源码，运行阶段 alpine + 二进制。`docker compose up -d`（仓库根）走这份 |
+| `Dockerfile`（本目录） | 离线/预编译：只 COPY 交叉编译好的二进制与 entrypoint，镜像内零编译零拉取。路径 C / D 走这份 |
 | `entrypoint.sh` | `WILDWORK_*` → 容器内 `config.json`；启动前校验；`exec --no-tray` |
-| `docker-compose.yml` | NAS 上 `docker compose up -d --build` 用的构建版 |
+| `docker-compose.yml`（本目录） | NAS 上 `docker compose up -d --build` 用的构建版（要求本目录已有二进制） |
 | `fnos-compose.yml` | fnOS 图形界面粘贴用的版本（含 ★必改 标注与注释） |
 | `build-binary.sh` | **开发机**：交叉编译 `linux/amd64` 二进制（含 ELF 与时区库自检） |
 | `build-image.sh` | **有 Docker 的机器**：构建镜像 + 导出离线 tar + SHA256SUMS |

@@ -1,5 +1,9 @@
 # workbuddy-api · Docker Compose 部署文件（NAS 上现场构建版）
 #
+# ★ 只想「从源码起一套」的话用**仓库根目录**的 ../docker-compose.yml ——
+#   那份的构建上下文是仓库根，镜像内自己编译，不需要事先准备二进制。
+#   本文件要求 docker/ 目录里已有交叉编译好的 workbuddy-api。
+#
 # 用法：把整个 docker/ 目录传到 NAS，cd 进去后执行：
 #   docker compose up -d --build
 #

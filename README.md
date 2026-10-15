@@ -5,6 +5,7 @@
 
 [![Go](https://img.shields.io/badge/go-1.25-blue)](go.mod)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Docker Image](https://github.com/kongbai333/workbuddy-api/actions/workflows/docker.yml/badge.svg)](https://github.com/kongbai333/workbuddy-api/actions/workflows/docker.yml)
 
 ---
 
@@ -136,8 +137,11 @@ Claude Code / Codex / Cursor / 任意 OpenAI 兼容客户端
 - **Windows / macOS**：双击或命令行启动，系统托盘常驻，托盘菜单
   「打开主界面 / 查看日志 / 退出」
 - **Linux 无桌面**：加 `--no-tray` 无头运行
-- **Docker / fnOS NAS**：`docker/` 下有完整 compose、离线镜像 tar、
-  fnOS 专用 compose 与构建脚本。二进制内嵌 tzdata，容器内时间无需额外配置
+- **Docker**：根目录 `Dockerfile` 多阶段构建，镜像内自己编译源码 ——
+  干净 clone 下 `docker compose up -d` 即可跑，不需要事先准备 exe/二进制。
+  推送到 GitHub 后由 Actions 自动构建并推送镜像到 GHCR，见下方 3.2
+- **fnOS NAS / 离线**：`docker/` 下有离线镜像 tar、fnOS 专用 compose 与构建脚本。
+  二进制内嵌 tzdata，容器内时间无需额外配置
 
 ---
 
@@ -165,17 +169,46 @@ data/            # 状态、流水、日志
 
 ### 3.2 Docker
 
+三种方式，按你的环境选一种。**前两种都不需要事先编译二进制。**
+
+#### 方式一 · 直接拉 GitHub Actions 构建好的镜像（最省事）
+
+每次推送 / 打 `v*` tag，Actions 会自动构建 `linux/amd64` + `linux/arm64`
+镜像并推到 GitHub Container Registry：
+
 ```bash
-cd docker
-cp .env.example .env
+docker run -d --name workbuddy-api --restart unless-stopped \
+  -p 7863:7863 \
+  -v "$PWD/data:/data" \
+  -e WILDWORK_ADMIN_PASSWORD='改成你自己的强随机密码' \
+  -e WILDWORK_API_KEY='改成你自己的强随机密钥' \
+  -e TZ=Asia/Shanghai \
+  ghcr.io/kongbai333/workbuddy-api:latest
+```
+
+> GHCR 的包**默认私有**，直接 `docker pull` 会 401。要么在
+> GitHub → Packages → `workbuddy-api` → Package settings 里把可见性改成 Public，
+> 要么先 `docker login ghcr.io` 再拉。可选标签：`latest`、`0.1.2`（对应 `v0.1.2`）、
+> `sha-xxxxxxx`（回滚到具体提交）。
+
+#### 方式二 · 从源码本地构建（干净 clone 即可）
+
+```bash
+cp docker/.env.example .env
 # 编辑 .env：生成两个强随机值填入 ★必改 项
 head -c 32 /dev/urandom | base64 | tr -d '/+='   # 用于 API_KEY
 head -c 18 /dev/urandom | base64 | tr -d '/+='   # 用于 ADMIN_PASSWORD
 docker compose up -d
 ```
 
-镜像离线构建（目标机无网络时）：`docker/build-image.sh` 产出 tar，
-再 `docker/load-image.sh` 导入。
+根目录 `Dockerfile` 是多阶段构建：构建阶段用 `golang:1.25-alpine` 编译出静态
+二进制，运行阶段只保留 alpine + 该二进制，**镜像内零 apk 依赖**（时区库已内嵌进
+二进制，CA 证书用 minirootfs 自带）。多架构构建用 `GOARCH` 交叉编译而非 QEMU 模拟。
+
+#### 方式三 · 完全离线（目标机无网络）
+
+`docker/build-image.sh` 产出镜像 tar，拷到目标机后 `docker/load-image.sh` 导入。
+这条路径走 `docker/Dockerfile`（只 COPY 预编译二进制，构建过程完全不联网）。
 
 详见 [`docker/README.md`](docker/README.md)。
 
