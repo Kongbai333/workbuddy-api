@@ -105,6 +105,57 @@ func ParseListen(s string) (Listen, error) {
 	return Listen{Host: host, Port: port}, nil
 }
 
+// LoginCallbackDefaultPort 回调基址未写端口时使用的默认端口。
+// 选一个不常撞车的值（不与默认 7863 相同），便于 -p 映射时一眼认出。
+const LoginCallbackDefaultPort = 17863
+
+// ParseLoginCallback 解析 login_callback 配置，返回回调监听的地址与对外的基址。
+//
+// 返回 ("", "", nil) 表示未配置 —— 调用方应沿用「127.0.0.1 + 随机空闲端口」
+// 的裸机行为（浏览器与程序同机时天然可达）。
+//
+// 监听地址**一律是 0.0.0.0:<port>**，不用配置里的主机名：
+//   - 容器里配置写的往往是宿主机的 IP（如 192.168.1.10），那个 IP 并不属于
+//     容器，绑它必然 bind 失败；
+//   - 裸机时绑 0.0.0.0 同样能被广告出去的 LAN IP 访问到。
+//
+// 只接受 http：回调监听是明文 HTTP，写成 https 会得到一个「地址看着对、
+// 浏览器却连不上」的静默失败，不如在这里直接报错。
+func ParseLoginCallback(raw string) (listenAddr, baseURL string, err error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", "", nil
+	}
+	// 允许省略 scheme（"127.0.0.1:17863" 这种最省事的写法）
+	if !strings.Contains(s, "://") {
+		s = "http://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", "", fmt.Errorf("无效地址 %q：%v", raw, err)
+	}
+	if u.Scheme != "http" {
+		return "", "", fmt.Errorf("只支持 http（回调监听是明文 HTTP），got %q", u.Scheme)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return "", "", fmt.Errorf("缺少主机名：%q", raw)
+	}
+	if u.Path != "" && u.Path != "/" {
+		return "", "", fmt.Errorf("不应带路径（路径由各渠道自己拼），got %q", u.Path)
+	}
+	portStr := u.Port()
+	if portStr == "" {
+		portStr = strconv.Itoa(LoginCallbackDefaultPort)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return "", "", fmt.Errorf("无效端口 %q", portStr)
+	}
+	baseURL = "http://" + net.JoinHostPort(host, portStr)
+	return net.JoinHostPort("0.0.0.0", portStr), baseURL, nil
+}
+
 // Config 顶层配置。
 type Config struct {
 	Listen    Listen `json:"listen"`
@@ -213,6 +264,25 @@ type Config struct {
 	// qodercom/workbuddyai/qwenwork），value 为代理 URL（http/https/socks5）。
 	// 空串或未列出的渠道直连。主要用途：给有区域限制的渠道走代理。
 	Proxies map[string]string `json:"proxies,omitempty"`
+
+	// LoginCallback 本机 OAuth 回调的**对外可达基址**，形如 http://127.0.0.1:17863。
+	//
+	// 为什么需要它：TraeWork 与千问办公两个渠道的登录，靠「浏览器访问一个本机
+	// HTTP 回调地址」把凭证交回程序 —— 程序临时起一个监听、把地址交给授权页，
+	// 浏览器登录成功后跳回来，程序才拿得到凭证。
+	//
+	// 裸机运行时默认监听 127.0.0.1 的**随机空闲端口**：浏览器与程序同机，
+	// 天然可达。但容器里 127.0.0.1 指的是容器自己，宿主机（或局域网）的浏览器
+	// 访问不到；随机端口又没法用 -p 映射。表现是**授权页显示登录完成、面板却
+	// 一直停在「等待完成」**，而日志里没有任何错误 —— 极难定位。
+	//
+	// 容器部署时把它设成「浏览器够得着的地址」，并把端口映射出去：
+	//   http://127.0.0.1:17863     浏览器与 Docker 宿主机同机 → -p 127.0.0.1:17863:17863
+	//   http://192.168.1.10:17863  浏览器在别的机器（NAS 场景）→ -p 17863:17863
+	// 端口必须显式给出（缺省 17863），因为容器端口要能被映射。
+	//
+	// 留空 = 老行为（127.0.0.1 + 随机端口），裸机部署不需要设置。
+	LoginCallback string `json:"login_callback,omitempty"`
 
 	// 解析后
 	HardCreditDur  time.Duration `json:"-"`
@@ -459,6 +529,9 @@ func applyEnv(c *Config) {
 			c.Compat.MaxTokensCap = n
 		}
 	}
+	if v := os.Getenv("WILDWORK_LOGIN_CALLBACK"); v != "" {
+		c.LoginCallback = v
+	}
 }
 
 func (c *Config) normalize() error {
@@ -493,6 +566,13 @@ func (c *Config) normalize() error {
 		c.Listen.Port = 7863
 	}
 	c.AdminPass = strings.TrimSpace(c.AdminPass)
+	// 回调基址：非法值必须在这里报错，而不是等到用户点「添加账号」时才失败 ——
+	// 登录失败发生在浏览器里，用户看不到容器日志，排查成本极高。
+	if _, base, err := ParseLoginCallback(c.LoginCallback); err != nil {
+		return fmt.Errorf("login_callback: %w", err)
+	} else {
+		c.LoginCallback = base // 规范化（补 scheme、补端口、去尾斜杠）
+	}
 	// 代理配置清洗：剔除空值，校验 URL 形态（http/https/socks5）。
 	for k, v := range c.Proxies {
 		v = strings.TrimSpace(v)

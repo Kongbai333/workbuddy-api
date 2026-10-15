@@ -32,6 +32,11 @@ ERR_COOLDOWN="${WILDWORK_ERR_COOLDOWN:-10m}"
 GROWTH_REDEEM="${WILDWORK_GROWTH_REDEEM_STREAK:-false}"
 GROWTH_TRAVEL="${WILDWORK_GROWTH_TRAVEL:-false}"
 GROWTH_TRAVEL_LOC="${WILDWORK_GROWTH_TRAVEL_LOCATION:-1}"
+# 登录回调基址：容器里 127.0.0.1 是容器自己，TraeWork / 千问办公 的登录回调
+# 必须走一个「宿主机映射过、浏览器够得着」的固定端口，否则授权完成后面板
+# 会一直停在「等待完成」。镜像默认 http://127.0.0.1:17863（浏览器与 Docker
+# 宿主机同机）；浏览器在别的机器时改成宿主机的局域网地址。
+LOGIN_CALLBACK="${WILDWORK_LOGIN_CALLBACK:-}"
 
 # to_int <值> <兜底>：只保留数字；清洗后为空则用兜底。
 # 防止把 "abc" 之类的值直接写进 JSON 造成解析失败。
@@ -75,6 +80,7 @@ cat > "$HOME_DIR/config.json" <<EOF
   "auth_dir": "$(json_escape "$AUTH_DIR")",
   "state_file": "$(json_escape "$STATE_FILE")",
   "region": "$(json_escape "$REGION")",
+  "login_callback": "$(json_escape "$LOGIN_CALLBACK")",
   "cooldown": {
     "hard_credit": "$(json_escape "$HARD_CREDIT")",
     "soft_rate": "$(json_escape "$SOFT_RATE")",
@@ -96,6 +102,11 @@ echo "[entrypoint] 已生成 $HOME_DIR/config.json"
 echo "[entrypoint]   listen=${LISTEN}  region=${REGION}  timeout=${TIMEOUT}s"
 echo "[entrypoint]   auth_dir=${AUTH_DIR}"
 echo "[entrypoint]   state_file=${STATE_FILE}"
+if [ -n "$LOGIN_CALLBACK" ]; then
+    echo "[entrypoint]   login_callback=${LOGIN_CALLBACK}（TraeWork/千问办公 登录用；须把该端口映射到宿主机）"
+else
+    echo "[entrypoint]   login_callback 未设置：TraeWork/千问办公 的登录回调会落在容器内 127.0.0.1 的随机端口，容器外的浏览器够不着"
+fi
 if [ -z "$API_KEY" ]; then
     echo "[entrypoint]   ⚠️  API_KEY 为空：OpenAI 兼容接口无鉴权！仅限本机/内网，切勿暴露公网"
 else

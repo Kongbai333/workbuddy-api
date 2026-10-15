@@ -70,7 +70,10 @@ func NewClient() *http.Client { return &http.Client{Timeout: 30 * time.Second} }
 //
 // 注意：不能复用 login-state.json 本身——它承载的一次性登录状态（authCode/verifier）
 // 在登录成功/取消时会被删除。
-func Start(client *http.Client, statePath string) (string, error) {
+// callbackBase 是回调的**对外可达基址**（如 http://127.0.0.1:17863），来自
+// config.LoginCallback；留空表示沿用「127.0.0.1 + 随机空闲端口」的裸机行为。
+// 容器部署为什么必须设置它，见 internal/config 里 LoginCallback 字段的注释。
+func Start(client *http.Client, statePath, callbackBase string) (string, error) {
 	machineID := randHex(32) // 真实客户端 64 位 hex（32 字节）
 	deviceID := clientDeviceID()
 	if deviceID != "" {
@@ -82,12 +85,16 @@ func Start(client *http.Client, statePath string) (string, error) {
 		log.Printf("traework login: 未读到客户端设备号，回退随机 %s…（该账号签到可能 9074）", shortDevice(deviceID))
 	}
 	codeVerifier, codeChallenge := traework.GenPKCE() // PKCE：verifier 必须保存，交换 AuthCode 时用
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, base, err := listenCallback(callbackBase)
 	if err != nil {
 		return "", err
 	}
-	addr := ln.Addr().String()
-	callback := "http://" + addr + "/authorize"
+	callback := base + "/authorize"
+	if callbackBase != "" {
+		// 容器部署最常踩的坑就在这一行：基址对了但端口没映射出去，
+		// 浏览器打不开回调地址，面板只会一直转圈。日志里留一条便于对账。
+		log.Printf("traework login: 回调基址 %s（容器部署须把该端口映射到宿主机）", callback)
+	}
 	st := state{MachineID: machineID, DeviceID: deviceID, CodeVerifier: codeVerifier}
 	if err := writeState(statePath, st); err != nil {
 		_ = ln.Close()
@@ -402,4 +409,38 @@ func shortDevice(id string) string {
 		return id
 	}
 	return id[:6] + "…"
+}
+
+// listenCallback 起回调监听，并返回「对外该广告出去的基址」。
+//
+// callbackBase 为空（裸机默认）：127.0.0.1 + 随机空闲端口。浏览器与程序同机，
+// 天然可达；行为与历史版本逐字节一致（不改动已有部署）。
+//
+// callbackBase 非空（容器部署）：端口取 base 里的端口、监听 0.0.0.0。
+//   - 不能监听 base 里的主机名：容器里那个地址（宿主机 LAN IP）不属于本容器，
+//     绑它必然 bind 失败；
+//   - 端口必须显式给出：容器端口要能被 -p 映射出去，随机端口映射不了 ——
+//     这正是「授权页显示登录完成、面板却一直等待」的根因。
+func listenCallback(callbackBase string) (net.Listener, string, error) {
+	base := strings.TrimRight(strings.TrimSpace(callbackBase), "/")
+	if base == "" {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, "", err
+		}
+		return ln, "http://" + ln.Addr().String(), nil
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return nil, "", fmt.Errorf("回调基址无效 %q：%w", callbackBase, err)
+	}
+	port := u.Port()
+	if port == "" {
+		return nil, "", fmt.Errorf("回调基址必须带端口（如 http://127.0.0.1:17863），got %q", callbackBase)
+	}
+	ln, err := net.Listen("tcp", net.JoinHostPort("0.0.0.0", port))
+	if err != nil {
+		return nil, "", fmt.Errorf("回调端口 %s 监听失败（被占用，或 compose 未映射该端口）：%w", port, err)
+	}
+	return ln, base, nil
 }

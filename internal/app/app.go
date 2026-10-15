@@ -545,7 +545,9 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	var err error
 	switch k {
 	case provider.TraeWork:
-		authURL, err = logintrae.Start(a.loginClient, a.loginStateFP)
+		// 传回调基址：容器里 127.0.0.1 是容器自己，浏览器够不着随机端口，
+		// 登录会永远停在「等待完成」（见 config.LoginCallback 注释）。
+		authURL, err = logintrae.Start(a.loginClient, a.loginStateFP, a.cfg.LoginCallback)
 	case provider.Qoder:
 		authURL, err = loginqoder.Start(a.loginClient, a.loginStateFP)
 	case provider.QoderCN:
@@ -555,7 +557,7 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	case provider.WorkBuddyAI:
 		authURL, err = loginwbai.Start(a.loginClient, a.loginStateFP)
 	case provider.QwenWork:
-		authURL, err = loginqwenwork.Start(a.loginClient, a.loginStateFP)
+		authURL, err = loginqwenwork.Start(a.loginClient, a.loginStateFP, a.cfg.LoginCallback)
 	case provider.Raccoon:
 		// 协议回调接管要把「自身 exe 绝对路径」写进注册表命令行，故这里先取 os.Executable。
 		if exe, eerr := os.Executable(); eerr != nil {

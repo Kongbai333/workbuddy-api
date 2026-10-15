@@ -178,13 +178,21 @@ data/            # 状态、流水、日志
 
 ```bash
 docker run -d --name workbuddy-api --restart unless-stopped \
-  -p 7863:7863 \
+  -p 7863:7863 -p 127.0.0.1:17863:17863 \
   -v "$PWD/data:/data" \
   -e WILDWORK_ADMIN_PASSWORD='改成你自己的强随机密码' \
   -e WILDWORK_API_KEY='改成你自己的强随机密钥' \
+  -e WILDWORK_LOGIN_CALLBACK='http://127.0.0.1:17863' \
   -e TZ=Asia/Shanghai \
   ghcr.io/kongbai333/workbuddy-api:latest
 ```
+
+> `17863` 是**登录回调端口**：TraeWork 与千问办公的登录靠浏览器访问一个本机回调
+> 地址完成，容器里 `127.0.0.1` 指的是容器自己，不映射这个端口就会出现
+> 「授权页显示登录完成、面板一直停在等待完成」。镜像已内置
+> `WILDWORK_LOGIN_CALLBACK=http://127.0.0.1:17863`；**浏览器在另一台电脑时**
+> 要把它改成宿主机的局域网地址（如 `http://192.168.1.10:17863`），端口映射
+> 相应改成 `-p 17863:17863`。详见 [`docker/README.md`](docker/README.md)。
 
 嫌 `docker run` 参数长的话，直接用仓库里的 [`docker-compose.image.yml`](docker-compose.image.yml)：
 

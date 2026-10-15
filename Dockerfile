@@ -56,7 +56,9 @@ RUN sed -i 's/\r$//' /app/entrypoint.sh \
 # 把 config.json 作为单文件 bind 挂载时，宿主上该文件不存在，Docker 会建出
 # 一个同名**空目录**，程序读配置即崩（现象是容器 Exited:0）。
 VOLUME ["/data"]
-EXPOSE 7863
+# 17863 = 登录回调端口（TraeWork / 千问办公）。容器里 127.0.0.1 指的是容器自己，
+# 回调必须走「映射到宿主机」的固定端口，否则授权完成后面板一直停在「等待完成」。
+EXPOSE 7863 17863
 
 # 配置全部通过 WILDWORK_* 环境变量传入，由 entrypoint 在容器内生成 config.json。
 ENV WILDWORK_HOME="/app" \
@@ -64,6 +66,7 @@ ENV WILDWORK_HOME="/app" \
     WILDWORK_AUTH_DIR="/data/auths" \
     WILDWORK_STATE_FILE="/data/state.json" \
     WILDWORK_REGION="cn" \
+    WILDWORK_LOGIN_CALLBACK="http://127.0.0.1:17863" \
     TZ="Asia/Shanghai"
 
 # /healthz 无需鉴权，探针不带 API Key。

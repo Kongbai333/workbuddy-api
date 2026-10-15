@@ -118,6 +118,7 @@ sh docker/build-image.sh          # 构建 + 导出 tar + SHA256SUMS 到 docker/
 | `WILDWORK_STATE_FILE` | `/data/state.json` | 冷却/签到状态 |
 | `WILDWORK_REGION` | `cn` | 区域，只接受 `cn` |
 | `TZ` | `Asia/Shanghai` | 影响定时签到触发时刻（已内嵌 tzdata，一定生效） |
+| `WILDWORK_LOGIN_CALLBACK` | `http://127.0.0.1:17863`（镜像内置） | 登录回调基址。**TraeWork / 千问办公 必须设**，且端口要映射出去；浏览器在别的机器时改成宿主机局域网 IP。详见「五、添加账号」 |
 
 ### 可选
 
@@ -142,15 +143,41 @@ sh docker/build-image.sh          # 构建 + 导出 tar + SHA256SUMS 到 docker/
 **在浏览器里做，不在容器里。** 打开 `http://<NAS_IP>:7863/`，
 用 `WILDWORK_ADMIN_PASSWORD` 登录，在面板里发起登录：
 
-| 类型 | 渠道 |
-|---|---|
-| 面板内完成 OAuth 轮询 | WorkBuddy、WorkBuddy AI、TraeWork、Qoder（三个变体）、QwenWork、小浣熊 |
-| 需从本机官方客户端导入凭据 | MonkeyCode、Loomy |
-| 需从浏览器 Cookie 粘贴令牌 | 智谱清言 GLM |
+| 类型 | 渠道 | 容器里能用吗 |
+|---|---|---|
+| 面板内完成 OAuth 轮询（纯服务端轮询，无本机回调） | WorkBuddy、WorkBuddy AI、Qoder（三个变体） | ✅ 直接可用 |
+| 授权后回调到**本机地址** | TraeWork、千问办公 QwenWork | ⚠️ 需配置 `WILDWORK_LOGIN_CALLBACK` + 映射端口，见下节 |
+| 授权后回调到**本机协议处理器** | 小浣熊 | ❌ 容器里没有 Windows 协议处理器，请用「从本机客户端导入」或裸机运行 |
+| 需从本机官方客户端导入凭据 | MonkeyCode、Loomy | ⚠️ 依赖本机已登录的客户端，容器里取不到，需手工放置 auth 文件 |
+| 需从浏览器 Cookie 粘贴令牌 | 智谱清言 GLM | ✅ 直接可用 |
 
 > 注：OpenCodeZen（匿名免费通道）已停用，面板不显示该渠道。
 
 > ⚠️ 导入型渠道（MonkeyCode / Loomy）依赖**本机已登录的官方客户端**，容器里取不到这类凭据。
+
+### ⚠️ TraeWork / 千问办公：授权完成了，面板却一直「等待完成」
+
+这两个渠道的登录靠「浏览器访问一个**本机** HTTP 回调地址」把凭证交回来。
+裸机运行时程序监听 `127.0.0.1` 的随机端口，浏览器与程序同机，天然可达；
+**但容器里 `127.0.0.1` 指的是容器自己**，而且随机端口没法用 `-p` 映射出去 ——
+于是授权页显示「登录完成」，面板却永远停在等待，容器日志里没有任何报错。
+
+解法：告诉程序「浏览器够得着的回调地址是什么」，并把那个端口映射出去。
+
+| 你的情况 | `WILDWORK_LOGIN_CALLBACK` | `ports` |
+|---|---|---|
+| 浏览器就在 Docker 宿主机上 | `http://127.0.0.1:17863` | `"127.0.0.1:17863:17863"` |
+| 浏览器在另一台电脑（NAS 常见） | `http://<宿主机局域网IP>:17863` | `"17863:17863"` |
+
+镜像里已默认 `WILDWORK_LOGIN_CALLBACK=http://127.0.0.1:17863`，仓库自带的几个
+compose 文件也都映射了 17863 —— 所以**浏览器与 Docker 宿主机同机时开箱即用**；
+只有浏览器在别的机器时才需要改成宿主机的局域网地址。
+
+改完重启容器，`docker logs` 里会打印实际生效的 `login_callback=`，登录发起时
+还会打印一行 `traework login: 回调基址 …`，可直接对账。
+
+> 端口只接受 http、必须显式写端口。用 `https://` 会在启动时直接报错 ——
+> 回调监听是明文 HTTP，写成 https 只会得到「地址看着对、浏览器连不上」的静默失败。
 
 ### ⚠️ 凭据是平台绑定的（重要，别踩）
 

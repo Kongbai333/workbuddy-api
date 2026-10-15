@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -89,16 +90,26 @@ func NewClient() *http.Client {
 }
 
 // Start 发起登录：生成 PKCE、起本机回调、返回授权 URL。
-func Start(_ *http.Client, statePath string) (string, error) {
+//
+// callbackBase 是回调的**对外可达基址**（如 http://127.0.0.1:17863），来自
+// config.LoginCallback；留空表示沿用「127.0.0.1 + 随机空闲端口」的裸机行为。
+// 容器部署为什么必须设置它，见 internal/config 里 LoginCallback 字段的注释。
+func Start(_ *http.Client, statePath, callbackBase string) (string, error) {
 	verifier, challenge := makePKCE()
 
-	// 本机回调：随机空闲端口
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, base, err := listenCallback(callbackBase)
 	if err != nil {
-		return "", fmt.Errorf("listen callback: %w", err)
+		return "", err
 	}
+	// 注意：redirect_uri 必须与后面 Poll 兑换 token 时提交的一字不差，
+	// 故端口从 base 里取、并落进 state 供 Poll 复用（Hydra 会逐字符比对）。
 	port := ln.Addr().(*net.TCPAddr).Port
-	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
+	redirectURI := base + "/callback"
+	if callbackBase != "" {
+		// 同 login_trae：容器里基址对了但端口没映射出去，浏览器打不开回调地址，
+		// 面板只会一直转圈。日志里留一条便于对账。
+		log.Printf("qwenwork login: 回调基址 %s（容器部署须把该端口映射到宿主机）", redirectURI)
+	}
 
 	authURL := fmt.Sprintf("%s/oauth2/auth?client_id=%s&code_challenge=%s&code_challenge_method=S256&redirect_uri=%s&response_type=code&scope=%s&state=%s",
 		OAuthBase, ClientID, challenge,
@@ -373,4 +384,34 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(rs[:n])
+}
+
+// listenCallback 起回调监听，并返回「对外该广告出去的基址」。
+//
+// callbackBase 为空（裸机默认）：127.0.0.1 + 随机空闲端口，行为与历史版本一致。
+// callbackBase 非空（容器部署）：端口取 base 里的端口、监听 0.0.0.0 ——
+// 容器里 127.0.0.1 是容器自己，只有把端口 -p 出去、让浏览器访问宿主机地址，
+// 授权码才回得来。详见 internal/config 的 LoginCallback 注释。
+func listenCallback(callbackBase string) (net.Listener, string, error) {
+	base := strings.TrimRight(strings.TrimSpace(callbackBase), "/")
+	if base == "" {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, "", fmt.Errorf("listen callback: %w", err)
+		}
+		return ln, "http://" + ln.Addr().String(), nil
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return nil, "", fmt.Errorf("回调基址无效 %q：%w", callbackBase, err)
+	}
+	port := u.Port()
+	if port == "" {
+		return nil, "", fmt.Errorf("回调基址必须带端口（如 http://127.0.0.1:17863），got %q", callbackBase)
+	}
+	ln, err := net.Listen("tcp", net.JoinHostPort("0.0.0.0", port))
+	if err != nil {
+		return nil, "", fmt.Errorf("回调端口 %s 监听失败（被占用，或 compose 未映射该端口）：%w", port, err)
+	}
+	return ln, base, nil
 }

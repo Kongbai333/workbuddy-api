@@ -45,7 +45,7 @@ func extractQuery(t *testing.T, authURL, key string) string {
 // 且不再自造随机号（自造号签到恒 9074）。
 func TestStartPrefersClientDeviceID(t *testing.T) {
 	withDeviceSource(t, func() string { return "4484256452647802" })
-	authURL, err := Start(NewClient(), filepath.Join(t.TempDir(), "login-state.json"))
+	authURL, err := Start(NewClient(), filepath.Join(t.TempDir(), "login-state.json"), "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestStartFallsBackToRandomDeviceID(t *testing.T) {
 
 	var dev1, mach1, dev2, mach2 string
 	for i := 0; i < 2; i++ {
-		authURL, err := Start(NewClient(), statePath)
+		authURL, err := Start(NewClient(), statePath, "")
 		if err != nil {
 			t.Fatalf("Start #%d: %v", i+1, err)
 		}
@@ -125,7 +125,7 @@ func TestPollSavesDeviceIntoAuthFileAndCleansLegacy(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	authURL, err := Start(NewClient(), statePath)
+	authURL, err := Start(NewClient(), statePath, "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
