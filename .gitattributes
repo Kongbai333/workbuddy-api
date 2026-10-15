@@ -14,6 +14,11 @@ docker/*.sh text eol=lf
 Dockerfile text eol=lf
 docker/Dockerfile text eol=lf
 
+# .dockerignore 同理：每行末尾多一个 \r 会让模式匹配不上
+# （`data/\r` 不等于 `data/`），表现为「该忽略的文件仍然被送进构建上下文」，
+# 而且不报任何错 —— 直到某天发现 .env 出现在镜像层里。
+.dockerignore text eol=lf
+
 # Go 源码与模块文件
 *.go text eol=lf
 go.mod text eol=lf
